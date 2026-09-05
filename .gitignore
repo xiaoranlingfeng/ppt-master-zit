@@ -1,0 +1,16 @@
+# local config (may contain personal paths / keys for cloud backends)
+.env
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+
+# agent/runtime artifacts
+projects/
+*.log
+comfyui_autostart.log
+
+# OS
+Thumbs.db
+.DS_Store
