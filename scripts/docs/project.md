@@ -22,9 +22,13 @@ python3 scripts/project_manager.py page-context-report <project_path>
 ```
 
 Notes:
+- Local sources under `projects/` are moved into the target project unless
+  `--copy` is passed; a file inside another project's tree is copied unless
+  `--move` is explicit, so borrowing a finished project's slices never empties it.
 - `--format` is optional and accepts registered canvas keys only. Pass it only
   when the actual canvas exactly matches a registered format.
-- Without `--format`, `init` creates `<name>_<YYYYMMDD>`; authoring records the
+- Without `--format`, `init` creates `<name>_<YYYYMMDD>`; a name that already
+  ends in `_<YYYYMMDD>` is used as-is (no second date). Authoring records the
   canvas in `spec_lock.md` for Default Generate or the first SVG for Quick
   Generate.
 - With `--format`, `init` preserves the registered form
@@ -35,6 +39,11 @@ Notes:
 - `--move` applies only to sources under the repository's `projects/` tree
 - A directly supplied supported bitmap is also copied into `images/` with a
   collision-safe basename while its original remains archived in `sources/`
+- SVG/EMF/WMF inputs stay source assets unless a converter manifest supplies
+  display metadata. Embedded Office vectors extracted from DOCX/PPTX land in
+  `images/` with `image_manifest.json` as first-class image assets and are
+  never converted to PNG; a blank browser preview of an EMF/WMF is expected.
+  Export behavior for them: [`svg-pipeline.md`](svg-pipeline.md)
 - Directory inputs are expanded non-recursively. After Step 1 conversion,
   pass the source file/directory once when generated Markdown lives beside the
   original source. If Step 1 used `-o` to write Markdown elsewhere, pass both

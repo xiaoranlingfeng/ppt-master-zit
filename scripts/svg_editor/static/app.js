@@ -732,10 +732,11 @@
                     waitForSlideRewrite(name);
                     return;
                 }
-                // Render SVG
+                // Validate before showing the canvas; parse errors use the catch below.
+                var sanitizedSvg = sanitizeSvg(data.content);
                 svgPlaceholder.style.display = "none";
                 svgContent.style.display = "block";
-                svgContent.innerHTML = sanitizeSvg(data.content);
+                svgContent.innerHTML = sanitizedSvg;
 
                 // Empty-canvas guard: surface a clear error if the SVG parsed
                 // to nothing renderable (issue #115's silent-blank scenario).
@@ -1847,16 +1848,48 @@
     // ================================================================
     //  Utility
     // ================================================================
+    var SVG_NS = "http://www.w3.org/2000/svg";
+    var SVG_ALLOWED_ELEMENTS = new Set([
+        "svg", "g", "defs", "symbol", "use", "path", "rect", "circle", "ellipse",
+        "line", "polyline", "polygon", "text", "tspan", "textpath", "image",
+        "clippath", "mask", "pattern", "marker", "lineargradient", "radialgradient",
+        "stop", "filter", "feblend", "fecolormatrix", "fecomponenttransfer",
+        "fecomposite", "feconvolvematrix", "fediffuselighting", "fedisplacementmap",
+        "fedistantlight", "fedropshadow", "feflood", "fefunca", "fefuncb", "fefuncg",
+        "fefuncr", "fegaussianblur", "feimage", "femerge", "femergenode",
+        "femorphology", "feoffset", "fepointlight", "fespecularlighting",
+        "fespotlight", "fetile", "feturbulence", "style", "title", "desc", "metadata",
+        "a", "switch", "view", "animate", "animatecolor", "animatetransform",
+        "animatemotion", "set", "mpath"
+    ]);
+
     function sanitizeSvg(svgString) {
         var doc = new DOMParser().parseFromString(svgString, "image/svg+xml");
-        doc.querySelectorAll("script,foreignObject").forEach(function (el) { el.remove(); });
+        if (doc.getElementsByTagName("parsererror").length ||
+            !doc.documentElement || doc.documentElement.localName.toLowerCase() !== "svg" ||
+            doc.documentElement.namespaceURI !== SVG_NS) {
+            throw new Error(t("err_empty_svg"));
+        }
         doc.querySelectorAll("*").forEach(function (el) {
+            // XML preserves case; the innerHTML sink normalizes HTML/SVG names.
+            var tag = el.localName.toLowerCase();
+            if (!SVG_ALLOWED_ELEMENTS.has(tag) || el.namespaceURI !== SVG_NS) {
+                el.remove();
+                return;
+            }
             Array.from(el.attributes).forEach(function (attr) {
-                if (attr.name.indexOf("on") === 0) el.removeAttribute(attr.name);
+                var name = attr.name.toLowerCase();
+                var local = attr.localName.toLowerCase();
+                if (local.indexOf("on") === 0 || name.indexOf("on") === 0) {
+                    el.removeAttributeNode(attr);
+                    return;
+                }
                 // Strip dangerous URI protocols from href/xlink:href
-                if (attr.localName === "href" &&
-                    (/^\s*javascript\s*:/i.test(attr.value) ||
-                     /^\s*data\s*:/i.test(attr.value))) {
+                var value = attr.value.replace(/[\t\r\n]/g, "").replace(/^[\x00-\x20]+/, "");
+                if (local === "href" &&
+                    (/^\s*javascript\s*:/i.test(value) ||
+                     /^\s*vbscript\s*:/i.test(value) ||
+                     /^\s*data\s*:/i.test(value))) {
                     el.removeAttributeNode(attr);
                 }
             });

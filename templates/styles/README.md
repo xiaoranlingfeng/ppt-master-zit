@@ -8,7 +8,7 @@
 
 ## Selection, Precedence, and Installation
 
-Selection follows the parent contract: Style choices come only from `styles_index.json`; a supplied exact root joins the selector and is preselected only when sole; a consulting label or visual description is a brief and never activates a workspace; Quick applies a supplied exact root directly and reads the installed copy before authoring flat pages.
+Selection and installation follow [`routing.md`](../../workflows/routing.md) §7 and [`apply-template-workspace`](../../workflows/stages/apply-template-workspace.md); a consulting label or visual description is a brief and never activates a workspace.
 
 | Decision | Precedence |
 |---|---|
@@ -17,6 +17,7 @@ Selection follows the parent contract: Style choices come only from `styles_inde
 | Reusable method and evidence discipline | Style, where compatible with the current contract |
 | Reusable structure | Layout, otherwise Deck; Style never supplies structure |
 | Recurring application context | Deck, subordinate to the Stage-1 contract |
+| Page titling: a Style's page-message discipline against a mode's title tendency | The authored §IX titles and any explicit user or Style titling rule; the locked mode shapes voice and register only ([`executor-base.md`](../../references/executor-base.md) §2.2 Step 2) |
 
 Style fallbacks seed the Stage-2 solution when a decision is open; they are not identity truth and never bypass confirmation. Surface a material Style/Deck conflict rather than weakening either.
 

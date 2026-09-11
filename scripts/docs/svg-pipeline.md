@@ -507,7 +507,9 @@ implementation before publishing their authoring SVG. Standard workflows do
 not rewrite completed SVG: they pass `--canonical-authoring` to
 `svg_quality_checker.py`, which reports any remaining deterministic change as an
 advisory warning (run `compact_svg_styles.py <svg_output> --inplace` on
-authored project pages and rerun the final gate to normalize, or keep the
+authored project pages, re-run `stamp_native_fallbacks.py --write` on pages
+that carry Chart/Table fallbacks because the rewrite changes their
+fingerprinted subtree, then rerun the final gate to normalize, or keep the
 explicit form). Structured template rosters keep their explicit form: per-slide
 compaction would make shared Master/Layout atoms diverge and shift native
 fallback hashes, so the normalizer is not applied to them; mirror
@@ -743,11 +745,13 @@ It aggregates:
 - `align_embed_images.py` (`crop-images` / `fix-aspect` / `embed-images` aliases route here)
 - `flatten_tspan.py`
 
+EMF/WMF images referenced by a page are preserved as external references, never embedded or rasterized.
+
 `svg_final/` is an optional Step 7.2 preview artifact; the native exporter reads `svg_output/` and never requires it. It is the self-contained visual reference and may be manually inserted as an SVG picture.
 
 ## `svg_to_pptx.py`
 
-Convert project SVGs into PPTX.
+Convert project SVGs into PPTX. EMF/WMF images referenced from `svg_output/` are embedded as native `image/x-emf` / `image/x-wmf` media at full vector fidelity.
 
 Native formulas use the two markers owned by
 [`native-formula.md`](../../references/native-formula.md). A standalone block
@@ -856,7 +860,11 @@ Behavior:
   the converter resolves its Latin / East Asian role to a typeface that normally
   requires a custom installation. A recommended stack such as
   `"Microsoft YaHei", Arial, sans-serif` does not warn merely because it ends with a
-  generic fallback.
+  generic fallback. Face resolution writes one face per script: the first named
+  Latin face fills `latin`, the first named CJK face fills `ea` (and `latin` when
+  no Latin face is named), and a generic family fills `latin` only when it
+  precedes every named face. Fonts are never embedded; a missing face substitutes
+  on the viewer's machine.
 - Multiline text export modes:
   - Default: one editable frame retains authored breaks and disables PowerPoint wrapping. An ordinary generated frame uses PowerPoint's native resize-shape-to-fit-text behavior, so deleting a retained break expands the frame instead of leaving text outside it; imported exact frames and structured multiline placeholder carriers retain fixed-size behavior.
   - `--reflow-text`: eligible same-size lines become flowing prose that PowerPoint may rewrap; a font-size change, list marker, or accepted larger gap remains a paragraph boundary. Legacy `--merge-paragraphs` aliases this mode.
@@ -909,8 +917,8 @@ Behavior:
   - Long-audio import and automatic long-audio splitting are not supported; keep narration assets page-level
   - Voice choices can be listed with `python3 scripts/notes_to_audio.py --list-common-voices`, `python3 scripts/notes_to_audio.py --list-voices --locale zh-CN`, or provider-specific `--provider <name> --list-voices`
 - Page transitions are controlled by `-t/--transition`; per-element object animations are controlled by `-a/--animation`
-- Per-element animation applies to ordinary top-level SVG `<g id="...">` groups; each group is a PowerPoint shape-target anchor, not necessarily one Animation Pane row. Use one group per logical Slide-local content unit rather than targeting a group count. Master/Layout atoms and slot groups are structural and excluded; exact id tokens remain a fallback only when explicit structural roles are absent
-- An explicit `animations.json` group entry may override the marker-free legacy chrome-name heuristic. It cannot override `data-pptx-layer` or an explicit static role/placeholder marker
+- Per-element animation applies to ordinary top-level SVG `<g id="...">` groups; each group is a PowerPoint shape-target anchor, not necessarily one Animation Pane row. Use one group per logical Slide-local content unit rather than targeting a group count
+- For chrome defaults, static role/placeholder overrides, and structural exclusions, see [`animations.md`](../../references/animations.md) §5
 - Start mode is set globally by `--animation-trigger`, mirroring PowerPoint's Start dropdown: `after-previous` (default, cascade with `--animation-stagger` spacing on slide entry), `on-click` (presenter-paced), or `with-previous` (all together on slide entry). A sidecar row may override it with `trigger`; the slide value is only the inherited Start mode
 - `on-click` is for live presentations only; recorded narration rejects every row that resolves to it, including a row with `trigger_shape`, because the tool does not generate object-level click timings
 - Flat SVG roots without top-level groups fall back to at most 8 visible primitives; beyond that, animation is skipped on the slide
@@ -1005,18 +1013,40 @@ Requirements:
 
 `text_measure.py` imports the same single-line DrawingML width estimator used by
 the SVG quality checker.
+Use Arial, Times New Roman, Georgia, Verdana, or Calibri for bundled per-glyph
+advance measurements from `svg_to_pptx/drawingml/font_advances.json` in regular,
+bold, italic, and bold-italic styles. Expect other families to keep the
+class-average estimate, with the existing fixed advances for monospaced faces.
 
 - `measure` prints one `width<TAB>text` line per input, or a JSON array with
   `--json`.
-- `wrap` prints greedy word- or CJK-cluster-wrapped SVG text content; `--y`
+- `wrap` prints greedy word- or CJK-cluster-wrapped SVG text content; a CJK
+  line breaks after clause punctuation (`，。；：`) when that keeps at least
+  three quarters of the greedy line, otherwise at the greedy limit. `--y`
   includes the outer `<text>` element, and `--json` prints line metrics.
 - `box` prints a `data-pptx-bounds` attribute plus numeric `top` and `bottom`, or
   a JSON bounds object with `--json`.
 - `calibrate` measures fixed CJK and Latin samples for every typography role
   from `spec_lock.md` or repeatable `--role NAME:FAMILY:SIZE` overrides, writes
-  `validation/text_calibration.json`, and prints a compact table or JSON. Add
-  `--outline` to include the longest planned line per mapped role from Design
-  Spec §IX.
+  `validation/text_calibration.json`, and prints a compact table or JSON. The
+  estimator is additive across scripts, so a line mixing CJK with Latin words
+  or digits is estimated as (CJK chars ÷ CJK rate + other chars ÷ Latin rate)
+  × 100; spaces and ASCII punctuation count as Latin, fullwidth punctuation as
+  CJK, digits use the DIGITS rate.
+  The rates are sample averages taken with the checker's own estimator
+  (headroom included), while the checker measures each real line glyph by
+  glyph: capital-heavy words, digits, and wide letters run wider than the Latin
+  rate, so the table also prints CAPS and DIGITS rates, and a zone should stay
+  about 5% below its bounds width. `--outline` adds the longest §IX planned
+  line per role — the planned wording only; a line rewritten while authoring
+  is re-estimated with the rates. The checker's overflow
+  diagnostic prints that line's average px per character, which is not a
+  reusable rate. A lock role without its own
+  `<role>_family` resolves to `title_family` when the role name contains
+  `title` or `numeral`, otherwise to `body_family`. Add `--outline` to include
+  the longest planned line per mapped role from Design Spec §IX; a Content
+  value joined by spaced `·`, `•`, `|`, `/` separators or by semicolons counts
+  each block as its own line.
 
 ```bash
 python3 scripts/text_measure.py measure "Editable DrawingML text" --size 22
@@ -1157,6 +1187,23 @@ python3 scripts/svg_position_calculator.py calc line --data "68:0.5,71:1.5,49:2.
 
 ### `flatten_tspan.py`
 
+Positioned `x`/`y`/nonzero `dy` rows keep the existing split/preserve/reflow
+behavior. A row starter's `dx` is consumed by its resolved line position;
+later inline scalar `dx` stays with its run through flattening.
+
+Native export represents inline `dx` with a separate NBSP run before the
+affected text. Its `a:rPr@spc`, in hundredths of a point, is
+`round(75 * (dx_px - estimated_space_width_px))`. The space estimate uses the
+current run's font and size. This keeps both positive and negative movement
+local to the boundary, including the first run, without changing tracking
+inside a label. Font substitution and estimated space metrics can introduce
+a small width difference. Spacing runs stay separate; positioned bullet
+markers remain literal text so bullet extraction cannot remove the offset.
+
+A small nonzero `dy` still starts a positioned row; it is not an inline
+superscript/subscript displacement. Use the supported `baseline-shift` form
+for inline vertical shifts.
+
 ```bash
 python3 scripts/svg_finalize/flatten_tspan.py projects/<project>/svg_output
 python3 scripts/svg_finalize/flatten_tspan.py path/to/input.svg path/to/output.svg
@@ -1200,6 +1247,10 @@ their conditionally loaded modules. The complete closed grammar those files
 rely on — mapping tables, accepted-but-warned spellings, rejection boundaries,
 and imported native-shape metadata — is documented in
 [`svg-contract.md`](svg-contract.md). This tool guide does not repeat it.
+
+For the first-pair approximation of odd-length or multi-segment custom
+`stroke-dasharray` lists and stroke-width normalization, see
+[`svg-contract.md`](svg-contract.md) §6.6.
 
 `svg_quality_checker.py` validates source SVG before finalization.
 `finalize_svg.py` and native export apply the preprocessing required by that

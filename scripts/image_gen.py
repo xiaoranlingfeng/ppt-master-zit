@@ -14,6 +14,7 @@ Backend selection (`IMAGE_BACKEND` in `.env` or the current process environment)
   IMAGE_BACKEND=qwen        -> Alibaba Qwen image backend
   IMAGE_BACKEND=zhipu       -> Zhipu GLM-Image backend
   IMAGE_BACKEND=volcengine  -> Volcengine Seedream backend
+  IMAGE_BACKEND=tencent     -> Tencent Cloud TokenHub backend
   IMAGE_BACKEND=modelscope  -> ModelScope backend
   IMAGE_BACKEND=siliconflow -> SiliconFlow backend
   IMAGE_BACKEND=fal         -> fal.ai backend
@@ -77,6 +78,8 @@ IMAGE_ENV_PREFIXES = (
     "VOLCENGINE_",
     "LAS_",
     "ARK_",
+    "TENCENT_",
+    "TOKENHUB_",
     "MODELSCOPE_",
     "SILICONFLOW_",
     "FAL_",
@@ -156,6 +159,15 @@ BACKEND_REGISTRY = {
         "key_hint": "LAS_API_KEY / VOLCENGINE_API_KEY / ARK_API_KEY",
         "aliases": ["ark", "doubao", "seedream"],
     },
+    "tencent": {
+        "module": "backend_tencent",
+        "tier": "extended",
+        "label": "Tencent Cloud TokenHub",
+        "default_model": "hy-image-v3",
+        "default_image_size": "1K",
+        "key_hint": "TENCENT_API_KEY / TOKENHUB_API_KEY",
+        "aliases": ["tokenhub", "hunyuan", "tencentmaas"],
+    },
     "modelscope": {
         "module": "backend_modelscope",
         "tier": "experimental",
@@ -217,14 +229,6 @@ BACKEND_REGISTRY = {
         "default_model": "black-forest-labs/flux-1.1-pro",
         "default_image_size": "1K",
         "key_hint": "REPLICATE_API_TOKEN / REPLICATE_API_KEY",
-    },
-    "openrouter": {
-        "module": "backend_openrouter",
-        "tier": "experimental",
-        "label": "OpenRouter",
-        "default_model": "google/gemini-3.1-flash-image",
-        "default_image_size": "1K",
-        "key_hint": "OPENROUTER_API_KEY",
     },
     "comfyui": {
         "module": "backend_comfyui",
@@ -381,6 +385,21 @@ def _print_backend_list() -> None:
         print()
     print("Recommendation: prefer CORE backends for everyday PPT generation.")
     _print_backend_resolution()
+
+
+def _check_backend_aspect_ratio(backend_module, aspect_ratio: str) -> None:
+    """Fail before the request when the resolved backend rejects this ratio.
+
+    ``ALL_ASPECT_RATIOS`` is the union across backends; each backend module
+    may narrow it with ``VALID_ASPECT_RATIOS``.
+    """
+    valid = getattr(backend_module, "VALID_ASPECT_RATIOS", None)
+    if valid and aspect_ratio not in valid:
+        name = getattr(backend_module, "__name__", "backend").rsplit(".", 1)[-1]
+        raise ValueError(
+            f"aspect_ratio '{aspect_ratio}' is not supported by {name}. "
+            f"Valid for this backend: {list(valid)}"
+        )
 
 
 def _resolve_backend() -> tuple[object, str]:
@@ -962,6 +981,7 @@ def _run_manifest(manifest: dict, manifest_path: str, backend_module, *,
     def _one(idx: int):
         item = items[idx]
         try:
+            _check_backend_aspect_ratio(backend_module, item["aspect_ratio"])
             saved_path = backend_module.generate(
                 prompt=item["prompt"],
                 aspect_ratio=item["aspect_ratio"],

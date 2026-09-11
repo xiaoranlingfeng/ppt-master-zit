@@ -44,6 +44,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -1049,8 +1050,13 @@ def _wait_for_server_ready(
     proc: subprocess.Popen,
     project_path: Path,
     timeout: int = STARTUP_TIMEOUT,
-) -> bool:
-    """Wait until this project's detached confirm server is accepting requests."""
+) -> int:
+    """Wait until this project's detached confirm server is accepting requests.
+
+    Returns the server pid recorded in the project lock, or 0 on timeout.
+    ``proc.pid`` is not used for identity: on Windows a venv ``python.exe``
+    may be a launcher whose child is the real interpreter.
+    """
     deadline = time.time() + timeout
     last_error = ''
     health_url = _server_url(port, '/api/health')
@@ -1058,18 +1064,22 @@ def _wait_for_server_ready(
         returncode = proc.poll()
         if returncode is not None:
             logger.error('confirm UI exited during startup (code=%s)', returncode)
-            return False
+            return 0
         try:
             with urllib.request.urlopen(health_url, timeout=1) as resp:
                 data = json.load(resp)
+                lock = _read_lock(project_path / LOCK_FILE_NAME)
+                server_pid = _lock_pid(lock)
                 if (
                     resp.status == 200
                     and isinstance(data, dict)
                     and data.get('service') == 'confirm_ui'
                     and data.get('project') == str(project_path)
-                    and data.get('pid') == proc.pid
+                    and lock is not None
+                    and lock.get('port') == port
+                    and data.get('pid') == server_pid
                 ):
-                    return True
+                    return server_pid
                 last_error = 'health response belongs to another service or project'
         except (OSError, ValueError, urllib.error.URLError) as exc:
             last_error = str(exc)
@@ -1080,7 +1090,7 @@ def _wait_for_server_ready(
         timeout,
         f' (last error: {last_error})' if last_error else '',
     )
-    return False
+    return 0
 
 
 def _launch_background_server(
@@ -1115,13 +1125,14 @@ def _launch_background_server(
             logger=logger,
         )
     logger.info('log: %s', log_path)
-    if not _wait_for_server_ready(port, proc, project_path):
+    server_pid = _wait_for_server_ready(port, proc, project_path)
+    if not server_pid:
         if proc.poll() is None:
             proc.terminate()
         raise RuntimeError(f'confirm UI failed to become reachable: {_server_url(port)}')
     _sync_session_state(confirm_dir, server_port=port, event='server-ready')
     url = _server_url(port)
-    logger.info('started confirm UI in background: %s (pid=%s)', url, proc.pid)
+    logger.info('started confirm UI in background: %s (pid=%s)', url, server_pid)
     if open_browser:
         webbrowser.open(url)
     return proc, port, log_path
@@ -2516,6 +2527,20 @@ def create_app(
 
     @app.before_request
     def _update_activity():
+        allowed_hosts = {PUBLIC_HOST, 'localhost', '::1', '[::1]'}
+        host = request.headers.get('Host', '').lower()
+        if host.startswith('[') or host.count(':') == 1:
+            host = re.sub(r':\d+$', '', host)
+        if host not in allowed_hosts:
+            return jsonify({'error': 'Forbidden Host header'}), 403
+        origin = request.headers.get('Origin')
+        if origin is not None:
+            try:
+                origin_host = urllib.parse.urlsplit(origin).hostname
+            except ValueError:
+                origin_host = None
+            if origin_host not in allowed_hosts:
+                return jsonify({'error': 'Forbidden Origin header'}), 403
         app.config['LAST_REQUEST_TIME'] = time.time()
 
     def _exit_with_lock_release(code: int = 0) -> None:

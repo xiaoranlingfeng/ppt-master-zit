@@ -17,8 +17,8 @@
   },
   "file_budgets": {
     "AGENTS.md": 3250,
-    "skills/ppt-master/SKILL.md": 1750,
-    "skills/ppt-master/references/executor-base.md": 11000,
+    "skills/ppt-master/SKILL.md": 2500,
+    "skills/ppt-master/references/executor-base.md": 12000,
     "skills/ppt-master/references/executor-structured.md": 5500,
     "skills/ppt-master/references/executor-chart.md": 1750,
     "skills/ppt-master/references/executor-visualization.md": 1000,
@@ -29,12 +29,13 @@
     "skills/ppt-master/references/executor-web-image.md": 750,
     "skills/ppt-master/references/executor-notes.md": 1000,
     "skills/ppt-master/references/shared-standards.md": 500,
-    "skills/ppt-master/references/shared-standards-core.md": 7000,
+    "skills/ppt-master/references/shared-standards-core.md": 7250,
     "skills/ppt-master/references/svg-effects.md": 9500,
-    "skills/ppt-master/references/native-data-interface.md": 5000,
+    "skills/ppt-master/references/native-data-interface.md": 3000,
     "skills/ppt-master/references/pptx-structure-interface.md": 3000,
     "skills/ppt-master/references/preset-shape-vocabulary.md": 2750,
-    "skills/ppt-master/references/strategist.md": 13000,
+    "skills/ppt-master/references/strategist.md": 9000,
+    "skills/ppt-master/references/plan-core.md": 7000,
     "skills/ppt-master/references/strategist-image.md": 3250,
     "skills/ppt-master/references/strategist-template.md": 2500,
     "skills/ppt-master/templates/design_spec_reference.md": 3500,
@@ -196,6 +197,7 @@
       "files": [
         "skills/ppt-master/workflows/generate-pptx.md",
         "skills/ppt-master/references/strategist.md",
+        "skills/ppt-master/references/plan-core.md",
         "skills/ppt-master/references/strategist-image.md",
         "skills/ppt-master/references/canvas-formats.md",
         "skills/ppt-master/templates/design_spec_reference.md",
@@ -245,6 +247,7 @@
       ],
       "files": [
         "skills/ppt-master/workflows/profiles/quick-generate.md",
+        "skills/ppt-master/references/plan-core.md",
         "skills/ppt-master/references/shared-standards-core.md",
         "skills/ppt-master/references/executor-base.md",
         "skills/ppt-master/references/preset-shape-vocabulary.md",
@@ -782,7 +785,7 @@
       "max_tokens": 200000
     },
     "stage.generate.executor.flat": {
-      "description": "Executor resident core for flat pages: execution rules, everyday devices and effects, module triggers, the preset vocabulary, plus the confirmed mode/style catalog file when the confirmation points to one (a custom without references reads none). Deeper modules load on their routing triggers.",
+      "description": "Executor resident core for flat pages: execution rules, everyday devices and effects, module triggers, the preset vocabulary, plus the confirmed mode/style catalog file when the confirmation points to one (a custom without references reads none). Deeper modules load on their routing triggers. Ceiling raised to 36000 after BUDGET_LOAD_SET reported 35031 tokens (2026-09-02 dogfood fixes).",
       "scope": "incremental",
       "files": [
         "skills/ppt-master/references/executor-base.md",
@@ -810,7 +813,7 @@
           "allow_repeat": true
         }
       ],
-      "max_tokens": 35000
+      "max_tokens": 36000
     },
     "stage.generate.executor.structured": {
       "description": "Structured template execution layered on the flat/shared core.",
@@ -1032,7 +1035,7 @@
       "files": [
         "skills/ppt-master/scripts/docs/conversion.md"
       ],
-      "max_tokens": 7500
+      "max_tokens": 7750
     },
     "stage.shared.troubleshooting": {
       "description": "Conditional troubleshooting reference for generation failures.",
@@ -1190,7 +1193,7 @@
       "max_tokens": 10000
     },
     "stage.generate.executor.structure": {
-      "description": "Qualitative relationship grammar and topology assembly; loaded at the first page whose Structure decision is yes.",
+      "description": "Qualitative relationship grammar and topology assembly; loaded at the first page whose topology decision is yes.",
       "scope": "incremental",
       "files": [
         "skills/ppt-master/references/executor-structure.md",
@@ -1341,13 +1344,14 @@
       },
       {
         "kind": "exact",
-        "fingerprint": "286b55cb84d7",
+        "fingerprint": "b8f9b97d03fc",
         "paths": [
           "skills/ppt-master/templates/styles/academic-research/templates/design_spec.md",
           "skills/ppt-master/templates/styles/consulting-decision/templates/design_spec.md",
           "skills/ppt-master/templates/styles/creative-pitch/templates/design_spec.md",
           "skills/ppt-master/templates/styles/incident-postmortem/templates/design_spec.md",
           "skills/ppt-master/templates/styles/investor-pitch/templates/design_spec.md",
+          "skills/ppt-master/templates/styles/mbb-consulting/templates/design_spec.md",
           "skills/ppt-master/templates/styles/narrative-keynote/templates/design_spec.md",
           "skills/ppt-master/templates/styles/operating-review/templates/design_spec.md",
           "skills/ppt-master/templates/styles/product-launch/templates/design_spec.md",
@@ -1419,13 +1423,15 @@
       },
       {
         "kind": "exact",
-        "fingerprint": "1136fd17656e",
+        "fingerprint": "efdf8b23a710",
         "paths": [
           "skills/ppt-master/templates/styles/academic-research/templates/design_spec.md",
           "skills/ppt-master/templates/styles/consulting-decision/templates/design_spec.md",
           "skills/ppt-master/templates/styles/creative-pitch/templates/design_spec.md",
+          "skills/ppt-master/templates/styles/duty-manual/templates/design_spec.md",
           "skills/ppt-master/templates/styles/incident-postmortem/templates/design_spec.md",
           "skills/ppt-master/templates/styles/investor-pitch/templates/design_spec.md",
+          "skills/ppt-master/templates/styles/mbb-consulting/templates/design_spec.md",
           "skills/ppt-master/templates/styles/narrative-keynote/templates/design_spec.md",
           "skills/ppt-master/templates/styles/operating-review/templates/design_spec.md",
           "skills/ppt-master/templates/styles/product-launch/templates/design_spec.md",
@@ -1435,6 +1441,96 @@
           "skills/ppt-master/templates/styles/workshop-teaching/templates/design_spec.md"
         ],
         "reason": "Style preset specs share the same method-only scope boundary by design."
+      },
+      {
+        "kind": "exact",
+        "fingerprint": "b720d5918a4f",
+        "paths": [
+          "skills/ppt-master/templates/decks/README.md",
+          "skills/ppt-master/templates/layouts/README.md"
+        ],
+        "reason": "Identical one-line pointer to routing.md §7 and apply-template-workspace in the kind READMEs; the rule owner is routing.md §7 (rule-owners R22)."
+      },
+      {
+        "kind": "exact",
+        "fingerprint": "602f1c4f5ee3",
+        "paths": [
+          "skills/ppt-master/templates/styles/consulting-decision/templates/design_spec.md",
+          "skills/ppt-master/templates/styles/mbb-consulting/templates/design_spec.md"
+        ],
+        "reason": "mbb-consulting inherits the consulting-decision method and image direction by design; only its visual system differs."
+      },
+      {
+        "kind": "exact",
+        "fingerprint": "9e4ef33145e2",
+        "paths": [
+          "skills/ppt-master/templates/styles/consulting-decision/templates/design_spec.md",
+          "skills/ppt-master/templates/styles/mbb-consulting/templates/design_spec.md"
+        ],
+        "reason": "mbb-consulting inherits the consulting-decision method and image direction by design; only its visual system differs."
+      },
+      {
+        "kind": "exact",
+        "fingerprint": "da38ec6c641e",
+        "paths": [
+          "skills/ppt-master/SPONSORS.md",
+          "skills/ppt-master/SPONSORS_CN.md"
+        ],
+        "reason": "Sponsor badge markup is identical across the English and Chinese sponsor pages by design."
+      },
+      {
+        "kind": "exact",
+        "fingerprint": "7bc60afc63e2",
+        "paths": [
+          "skills/ppt-master/references/visual-styles/blueprint.md",
+          "skills/ppt-master/references/visual-styles/dark-tech.md"
+        ],
+        "reason": "blueprint and dark-tech intentionally state the same sans + monospace font requirement."
+      },
+      {
+        "kind": "exact",
+        "fingerprint": "2b12c90b8142",
+        "paths": [
+          "skills/ppt-master/workflows/create-template/create-deck.md",
+          "skills/ppt-master/workflows/create-template/create-layout.md"
+        ],
+        "reason": "create-deck and create-layout share the same child-workflow entry contract under Create Template by design."
+      },
+      {
+        "kind": "exact",
+        "fingerprint": "fcc902f6644a",
+        "paths": [
+          "skills/ppt-master/SPONSORS.md",
+          "skills/ppt-master/SPONSORS_CN.md"
+        ],
+        "reason": "Sponsor badge markup is identical across the English and Chinese sponsor pages by design."
+      },
+      {
+        "kind": "exact",
+        "fingerprint": "092a8a1f88e9",
+        "paths": [
+          "skills/ppt-master/SPONSORS.md",
+          "skills/ppt-master/SPONSORS_CN.md"
+        ],
+        "reason": "Sponsor badge markup is identical across the English and Chinese sponsor pages by design."
+      },
+      {
+        "kind": "exact",
+        "fingerprint": "71cbe13a4813",
+        "paths": [
+          "skills/ppt-master/SPONSORS.md",
+          "skills/ppt-master/SPONSORS_CN.md"
+        ],
+        "reason": "Sponsor badge markup is identical across the English and Chinese sponsor pages by design."
+      },
+      {
+        "kind": "exact",
+        "fingerprint": "8fa66eadd0ba",
+        "paths": [
+          "skills/ppt-master/workflows/create-template/create-deck.md",
+          "skills/ppt-master/workflows/create-template/create-layout.md"
+        ],
+        "reason": "create-deck and create-layout share the same child-workflow entry contract under Create Template by design."
       }
     ]
   },
@@ -1650,11 +1746,6 @@
       "to": "skills/ppt-master/references/shared-standards-core.md"
     },
     {
-      "concern": "quick-svg-effects-contract",
-      "from": "skills/ppt-master/workflows/profiles/quick-generate.md",
-      "to": "skills/ppt-master/references/svg-effects.md"
-    },
-    {
       "concern": "quick-native-shape-contract",
       "from": "skills/ppt-master/workflows/profiles/quick-generate.md",
       "to": "skills/ppt-master/references/native-shape-authoring.md"
@@ -1668,16 +1759,6 @@
       "concern": "quick-semantic-svg-contract",
       "from": "skills/ppt-master/workflows/profiles/quick-generate.md",
       "to": "skills/ppt-master/references/semantic-svg.md"
-    },
-    {
-      "concern": "quick-structure-routing",
-      "from": "skills/ppt-master/workflows/profiles/quick-generate.md",
-      "to": "skills/ppt-master/references/executor-structure.md"
-    },
-    {
-      "concern": "quick-topology-routing",
-      "from": "skills/ppt-master/workflows/profiles/quick-generate.md",
-      "to": "skills/ppt-master/references/topology-assembly.md"
     },
     {
       "concern": "quick-structured-contract",
@@ -1703,6 +1784,16 @@
       "concern": "structured-interface-routing",
       "from": "skills/ppt-master/references/shared-standards-core.md",
       "to": "skills/ppt-master/references/pptx-structure-interface.md"
+    },
+    {
+      "concern": "executor-effects-routing",
+      "from": "skills/ppt-master/references/executor-base.md",
+      "to": "skills/ppt-master/references/svg-effects.md"
+    },
+    {
+      "concern": "executor-topology-routing",
+      "from": "skills/ppt-master/references/executor-base.md",
+      "to": "skills/ppt-master/references/topology-assembly.md"
     }
   ],
   "registries": [
@@ -1940,13 +2031,13 @@
             {
               "path": "skills/ppt-master/references/executor-base.md",
               "role": "consumer",
-              "fingerprint": "696cdad21077",
+              "fingerprint": "7e5a0d00892e",
               "reason": "This consumer needs the field contract for deterministic execution."
             },
             {
               "path": "skills/ppt-master/templates/spec_lock_reference.md",
               "role": "reference",
-              "fingerprint": "71622518b209",
+              "fingerprint": "c96bdc44695b",
               "reason": "This reference mirrors the owner field grammar or ownership boundary."
             },
             {
@@ -1954,12 +2045,6 @@
               "role": "consumer",
               "fingerprint": "b3ea6e828373",
               "reason": "This consumer needs the field contract for deterministic execution."
-            },
-            {
-              "path": "skills/ppt-master/references/native-data-interface.md",
-              "role": "consumer",
-              "fingerprint": "b52102689f16",
-              "reason": "Table run typography mirrors the deck font contract for native export."
             }
           ]
         },
@@ -1970,7 +2055,7 @@
             {
               "path": "skills/ppt-master/references/image-generator.md",
               "role": "compatibility",
-              "fingerprint": "f2c2cdc3b2a6",
+              "fingerprint": "0dff2d70710b",
               "reason": "This site documents a legacy or omission compatibility boundary."
             },
             {
@@ -2012,7 +2097,7 @@
             {
               "path": "skills/ppt-master/references/executor-structured.md",
               "role": "consumer",
-              "fingerprint": "dcbb7a6baae7",
+              "fingerprint": "b3fa9b13f1a3",
               "reason": "This consumer needs the field contract for deterministic execution."
             },
             {
@@ -2042,7 +2127,7 @@
             {
               "path": "skills/ppt-master/references/executor-structured.md",
               "role": "consumer",
-              "fingerprint": "7213f2c7ffe7",
+              "fingerprint": "10af7bec230c",
               "reason": "This consumer needs the field contract for deterministic execution."
             },
             {
@@ -2066,13 +2151,13 @@
             {
               "path": "skills/ppt-master/references/executor-base.md",
               "role": "consumer",
-              "fingerprint": "b63e7a4de45e",
+              "fingerprint": "50e5134d9e58",
               "reason": "This consumer needs the field contract for deterministic execution."
             },
             {
               "path": "skills/ppt-master/references/strategist.md",
               "role": "producer",
-              "fingerprint": "8121d65895a2",
+              "fingerprint": "c26288aa15ad",
               "reason": "This producer projects the owner field into the planning contract."
             },
             {
@@ -2080,6 +2165,12 @@
               "role": "reference",
               "fingerprint": "9e8775a83943",
               "reason": "This reference mirrors the owner field grammar or ownership boundary."
+            },
+            {
+              "path": "skills/ppt-master/references/plan-core.md",
+              "role": "reference",
+              "fingerprint": "2fd03eac49a4",
+              "reason": "This shared planning core states the reading-mode lean of the tag as a bias, not a quota; the grammar stays with the schema."
             }
           ]
         },
@@ -2096,13 +2187,13 @@
             {
               "path": "skills/ppt-master/references/strategist.md",
               "role": "producer",
-              "fingerprint": "0bf67e7eef14",
+              "fingerprint": "6c5e08eb6af5",
               "reason": "This producer projects the owner field into the planning contract."
             },
             {
               "path": "skills/ppt-master/templates/spec_lock_reference.md",
               "role": "reference",
-              "fingerprint": "6232ca5f6243",
+              "fingerprint": "3d39a6b6c858",
               "reason": "This reference mirrors the owner field grammar or ownership boundary."
             },
             {
@@ -2120,7 +2211,7 @@
             {
               "path": "skills/ppt-master/references/executor-structured.md",
               "role": "consumer",
-              "fingerprint": "dc21169163b7",
+              "fingerprint": "ca1b1f2fb576",
               "reason": "This consumer needs the field contract for deterministic execution."
             },
             {
@@ -2150,7 +2241,7 @@
             {
               "path": "skills/ppt-master/references/executor-structured.md",
               "role": "consumer",
-              "fingerprint": "7568538df9f4",
+              "fingerprint": "d3487eb32e2a",
               "reason": "This consumer needs the field contract for deterministic execution."
             },
             {
@@ -2180,13 +2271,13 @@
             {
               "path": "skills/ppt-master/references/executor-base.md",
               "role": "consumer",
-              "fingerprint": "fd5bce3b80c9",
+              "fingerprint": "e1538482e32d",
               "reason": "This consumer needs the field contract for deterministic execution."
             },
             {
               "path": "skills/ppt-master/references/strategist.md",
               "role": "producer",
-              "fingerprint": "0efce3f9be37",
+              "fingerprint": "d63d47fb811c",
               "reason": "This producer projects the owner field into the planning contract."
             },
             {
@@ -2331,6 +2422,10 @@
       {
         "glob": "skills/ppt-master/scripts/docs/template-tools.md",
         "reason": "Template creation tool behavior reference; create-template.md and template-designer.md carry the procedure and contract."
+      },
+      {
+        "glob": "skills/ppt-master/scripts/docs/native-data.md",
+        "reason": "Closed Chart/Table payload grammar for checker/exporter behavior; native-data-interface.md carries the canonical forms, and generation roles open this file only when a payload check fails."
       }
     ]
   }

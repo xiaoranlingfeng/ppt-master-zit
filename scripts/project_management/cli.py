@@ -230,7 +230,7 @@ class ProjectManager:
     CANVAS_FORMATS = CANVAS_FORMATS
 
     def __init__(self, base_dir: str | Path | None = None) -> None:
-        self.base_dir = Path(base_dir) if base_dir is not None else Path.cwd() / "projects"
+        self.base_dir = Path(base_dir) if base_dir is not None else PROJECTS_ROOT
 
     def scaffold_artifact(self, project_path: str, artifact: str) -> str:
         """Delegate deterministic Markdown scaffold rendering."""
@@ -269,7 +269,13 @@ class ProjectManager:
 
         date_str = datetime.now().strftime("%Y%m%d")
         if normalized_format is None:
-            project_dir_name = f"{project_name}_{date_str}"
+            # A name already carrying a `_<YYYYMMDD>` suffix (e.g. a full
+            # project dir name pasted back into init) is used as-is —
+            # re-appending would produce `name_20260101_20260102`.
+            if re.search(r"_\d{8}$", project_name):
+                project_dir_name = project_name
+            else:
+                project_dir_name = f"{project_name}_{date_str}"
         else:
             # A name already carrying a `_<format>_<YYYYMMDD>` suffix (e.g. a
             # full project dir name pasted back into init) is used as-is —
@@ -710,7 +716,7 @@ class ProjectManager:
         self._merge_image_manifest(rebased_items, images_dir / "image_manifest.json")
         print(
             f"Propagated {copied_count} image asset(s) + manifest "
-            f"from {asset_dir} → images/ (namespace: {namespace})"
+            f"from {asset_dir} → images/ (filenames unchanged; source_namespace {namespace!r} recorded in image_manifest.json)"
         )
 
     def _propagate_companion_image_assets(self, markdown_path: Path, project_dir: Path) -> None:
@@ -852,8 +858,23 @@ class ProjectManager:
                 continue
 
             inside_projects = is_within_path(source_path, PROJECTS_ROOT)
+            # A file inside another project's tree (projects/<other>/...) is
+            # that project's material: taking it by default emptied a finished
+            # project's images/ once. Copy unless --move is explicit.
+            inside_other_project = (
+                inside_projects
+                and not is_within_path(source_path, project_dir.resolve())
+                and source_path.resolve().parent != PROJECTS_ROOT.resolve()
+            )
             if copy:
                 effective_move = False
+            elif inside_other_project and not move:
+                effective_move = False
+                print(
+                    f"note: {source_path} belongs to another project; copied "
+                    f"(not moved). Pass --move to take it out of that project.",
+                    file=sys.stderr,
+                )
             elif inside_projects:
                 effective_move = True
             else:
@@ -864,7 +885,7 @@ class ProjectManager:
                     f"(not moved). Only sources under projects/ may be moved.",
                     file=sys.stderr,
                 )
-            elif inside_projects and not move and not copy:
+            elif inside_projects and not inside_other_project and not move and not copy:
                 print(
                     f"note: {source_path} is under projects/; moved into the target "
                     f"project. Pass --copy to preserve it.",

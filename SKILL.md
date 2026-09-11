@@ -7,7 +7,7 @@ description: >
   Use when the user explicitly asks for ppt-master-zit / zit 版, or wants
   decks whose images come from the local ComfyUI queue.
 metadata:
-  version: "6.1.0"
+  version: "6.3.2"  # base: official ppt-master v6.3.2
   copyright: "Copyright (c) 2025-2026 Hugo He"
   license: "MIT"
   official_repository: "https://github.com/hugohe3/ppt-master"
@@ -67,6 +67,32 @@ Recurrence — one cross-page motif varied by page role. Each form's syntax live
 in the selected runtime authority's construction references.
 
 ---
+
+## Vocabulary
+
+One meaning per term across every loaded file. Where a word is used in
+more than one sense, the sense is named here and the files say which one.
+
+| Term | Meaning |
+|---|---|
+| **Reference** (label) | A starting sketch the executing role adjusts or replaces freely, with no upstream repair or stated reason; `(binding)` after a field label removes that freedom |
+| **Relationships** | The §IX line naming a page's semantic units and their source-stated `order` / `link` / `parent` / `membership` / `contrast` / `overlap`, or `none` |
+| **Topology decision** | The per-page yes/no on whether geometry must carry the page's `Relationships` (`topology=yes` / `topology=no`); unrelated to `pptx_structure.mode` |
+| **`pptx_structure.mode`** | `flat` (every object Slide-local) or `structured` (declared Master/Layout/slot metadata); a packaging route, never information structure |
+| **Composition** | The §IX `Composition` line: a Reference for a page's macro composition, hierarchy, and focus |
+| **Image pattern** | The §VIII column carrying one image-composition suggestion in ordinary words (optionally citing `#P`/`#M` ids) |
+| **Layout** | A PowerPoint Layout under a Master, or the Layout template kind; never a page-composition sketch |
+| **Device** | An everyday page carrier — card, band, icon-and-label, KPI tile, divider, quote block — recalled in the Executor's device menu |
+| **Carrier** | What a page unit sits in: a device, an image, or native geometry; the family names are carrier and field, direction and sequence, grouping and ownership, emphasis and annotation. `data-pptx-carrier` is a structured-slot attribute, not this term. The **carrier receipt** is the checker's per-page inventory of what was actually drawn |
+| **Page job** | What one page must do for the reader; the input every carrier, contour, and effect decision is judged against |
+| **Page field** | One large surface, outline, aperture, or off-canvas contour that organizes zones instead of a card per unit |
+| **Contour / preset / atom** | A contour is a shape's silhouette; a preset is one of the 187 Office `prst` contours drawn through `preset_shape_svg.py`; an atom is one object that compiles to one DrawingML shape |
+| **Geometry signature** | The retained line `page job → composition move → contour / edge language` kept per page and compared before the next page |
+| **Texture** (of a block) | Whether a §IX block is prose, bullets, keywords, or labels; distinct from visual texture (grain, halftone) |
+| **Anchor** | Two senses: a lock anchor (a deck-wide color, type, or spacing value) and the `page_rhythm` tag `anchor` for structural pages |
+| **Sheet / slice / plate** | A sheet is one generated image holding several elements on a chroma key; a slice is one element cut from it; a plate is a registered full-canvas layer of several non-overlapping objects |
+| **Module line** | The `P<NN> modules: …` line written before each page naming the triggered modules it uses |
+| **Mode** | Named by qualifier: communication `mode` (how the deck argues), reading mode (`consumption_mode`), `generation_mode` (`continuous` / `split`), `pptx_structure.mode`, `replication_mode` (how a template was created) |
 
 ## Phase Frame
 

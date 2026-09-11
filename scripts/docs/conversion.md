@@ -58,11 +58,20 @@ Useful options:
   output path is known. With multiple inputs, each successful conversion prints
   its own JSON line after that source finishes.
 - At the unified `source_to_md.py` entry, `--images all|filtered|none`,
-  `--no-images`, and `--filter-images` map to the PDF image mode. The web
-  backend exposes its own direct `--no-images` option described below.
+  `--no-images`, and `--filter-images` map to the PDF image mode.
+  `--no-images` (or `--images none`) also applies to web pages (images stay
+  remote links, no `<stem>_files/`) and is a no-op on Markdown/text.
+- A `.md` / `.markdown` / `.txt` URL whose body is not HTML is saved verbatim
+  under a `Source:` header, named by the URL's filename stem.
 - Unknown backend-specific flags are passed through to each selected converter.
 - `-o/--output` selects one Markdown file for one input, or an output directory
   for multiple inputs / directory inputs.
+  A path that names an existing directory, or ends in `/`, is always treated as
+  a directory, even for a single input: the file keeps its default `<stem>.md`
+  name inside it; an extension-less `-o` for one input gains `.md`.
+  Local batch outputs are planned together; input/output collisions gain `_2`,
+  `_3`, etc. suffixes and are reported on stderr. A single-input file `-o`
+  refuses an existing file except its own Markdown/text passthrough.
 
 For multi-source project intake, use `project_manager.py import-sources` with
 all source paths / URLs. For local files, the default is to keep generated
@@ -102,6 +111,8 @@ Dependency:
 ```bash
 pip install PyMuPDF
 ```
+
+PyMuPDF is licensed under AGPL-3.0, with a commercial license available from Artifex. It is the only AGPL dependency in this repository and is imported only by this converter, so it can be left uninstalled when no PDF sources are involved. Anyone redistributing PPT Master together with its installed dependencies should review the AGPL terms first.
 
 ## `source_to_md/doc_to_md.py`
 
@@ -610,6 +621,9 @@ Error: PPTX-to-SVG conversion failed: Invalid DrawingML sRGB color structure
 
 Convert web pages to Markdown and download images locally by default. Use
 `--no-images` to retain remote image links without downloading their files.
+Pages, images, and redirect targets must be public HTTP(S) hosts with valid
+TLS; `--insecure` skips certificate checks, `--allow-private-hosts` admits
+intranet and loopback addresses.
 
 ```bash
 python3 scripts/source_to_md/web_to_md.py https://example.com/article
@@ -627,7 +641,7 @@ block Python's default TLS fingerprint. No extra flags needed. If
 `curl_cffi` is not available, it falls back to plain `requests`.
 
 On success, the converter uses the shared best-effort sidecar contract for
-`<output>.conversion_profile.json` beside the Markdown output.
+`<stem>.conversion_profile.json` beside the Markdown output.
 `--emit-result` is for wrapper scripts that need the actual saved Markdown path
 when the converter derives a title-based filename.
 

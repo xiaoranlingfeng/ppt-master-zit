@@ -53,6 +53,7 @@ from PIL import (
     ImageChops,
     ImageFilter,
     ImageMath,
+    ImageOps,
 )
 
 _GRID_RE = re.compile(r"^\s*(\d+)\s*[xX×]\s*(\d+)\s*$")
@@ -63,6 +64,20 @@ _DEFAULT_FEATHER = 4
 _BOUNDARY_OPAQUE_ALPHA = 32
 _SHEET_DIAGNOSTIC_BORDER_RATIO = 0.01
 _SHEET_DIAGNOSTIC_BUCKET_SIZE = 4
+# Isolated pixels this close to the key are compression or ringing artifacts a
+# larger tolerance absorbs; farther pixels are content crossing the gutter.
+_KEY_DRIFT_MAX_TOLERANCE = 48
+_KEY_DRIFT_MARGIN = 4
+# A key-dominant pixel whose strongest non-key channel reaches this fraction of
+# the key channel is opaque foreground of a key-like hue (malachite green on a
+# green key), not a semi-transparent blend with the key; color-to-alpha recovery
+# and despill skip it so the element keeps its own color.
+_KEY_PURITY_OPAQUE_RATIO = 0.6
+# At most this many trim pixels on a touched edge count as isolated drift.
+_EDGE_DRIFT_MAX_PIXELS = 8
+# Corner sample inset (px) and minimum cell fill for the backing-panel notice.
+_PANEL_CORNER_INSET = 2
+_PANEL_MIN_FILL = 0.75
 
 
 def _log(msg: str) -> None:
@@ -181,7 +196,12 @@ def _sample_bg(cell: Image.Image, tolerance: int) -> tuple[int, int, int]:
 def _sample_sheet_border(
     sheet: Image.Image,
 ) -> tuple[tuple[int, int, int], int]:
-    """Return the dominant RGB cluster and its spread in the outer 1% ring."""
+    """Return the dominant RGB cluster, its spread, and the ring's farthest pixel.
+
+    The spread describes the key field itself; the outlier distance is what a
+    ``--tolerance`` must reach so that isolated ringing or compression pixels
+    in the gutter still key out.
+    """
     rgb = sheet.convert("RGB")
     width, height = rgb.size
     border_x = max(1, round(width * _SHEET_DIAGNOSTIC_BORDER_RATIO))
@@ -222,7 +242,11 @@ def _sample_sheet_border(
         - min(pixel[index] for pixel in dominant_pixels)
         for index in range(3)
     ]
-    return dominant, max(channel_spreads)  # type: ignore[return-value]
+    outlier = max(
+        max(abs(pixel[index] - dominant[index]) for index in range(3))
+        for pixel in pixels
+    )
+    return dominant, max(channel_spreads), outlier  # type: ignore[return-value]
 
 
 def _max_channel_difference(cell: Image.Image, bg: tuple[int, int, int]) -> Image.Image:
@@ -237,6 +261,19 @@ def _pure_chroma_channel(bg: tuple[int, int, int]) -> Optional[int]:
     if bg.count(255) != 1 or bg.count(0) != 2:
         return None
     return bg.index(255)
+
+
+def _nearest_pure_key(
+    color: tuple[int, int, int],
+) -> Optional[tuple[tuple[int, int, int], int]]:
+    """Return the pure RGB key a drifted gutter color came from, with its distance."""
+    best: Optional[tuple[tuple[int, int, int], int]] = None
+    for index in range(3):
+        pure = tuple(255 if i == index else 0 for i in range(3))
+        distance = max(abs(color[i] - pure[i]) for i in range(3))
+        if distance <= _KEY_DRIFT_MAX_TOLERANCE and (best is None or distance < best[1]):
+            best = (pure, distance)  # type: ignore[assignment]
+    return best
 
 
 def _channel_alpha(channel: Image.Image, bg_value: int) -> Image.Image:
@@ -282,13 +319,43 @@ def _chroma_alpha(rgb: Image.Image, bg: tuple[int, int, int]) -> Image.Image:
     other_channels = [
         channel for index, channel in enumerate(channels) if index != key_index
     ]
-    key_excess = ImageChops.subtract(
+    key_blend = _key_blend_mask(
         channels[key_index],
         ImageChops.lighter(other_channels[0], other_channels[1]),
     )
-    key_dominance = key_excess.point(lambda value: 255 if value > 0 else 0)
     opaque = Image.new("L", rgb.size, 255)
-    return Image.composite(raw_alpha, opaque, key_dominance)
+    return Image.composite(raw_alpha, opaque, key_blend)
+
+
+def _key_blend_mask(key_channel: Image.Image, other_max: Image.Image) -> Image.Image:
+    """Mask the pixels that read as a blend of foreground with a pure key.
+
+    A pixel qualifies only when the key channel dominates and the strongest
+    non-key channel stays below `_KEY_PURITY_OPAQUE_RATIO` of it. An opaque
+    foreground color that merely shares the key's hue (a malachite green under a
+    green key) keeps a substantial non-key channel and is left opaque, while
+    antialiased edges, soft shadows, and glows composited over the key fall
+    below the ratio and still receive color-to-alpha recovery.
+    """
+    ratio_num = round(_KEY_PURITY_OPAQUE_RATIO * 10)
+    if hasattr(ImageMath, "lambda_eval"):
+        blend = ImageMath.lambda_eval(
+            lambda op: op["convert"](
+                (op["key"] > op["other"])
+                & (op["other"] * 10 < op["key"] * ratio_num),
+                "L",
+            ),
+            key=key_channel,
+            other=other_max,
+        )
+    else:
+        blend = ImageMath.eval(  # type: ignore[attr-defined]
+            "convert((key > other) & (other * 10 < key * ratio), 'L')",
+            key=key_channel,
+            other=other_max,
+            ratio=ratio_num,
+        )
+    return blend.point(lambda value: 255 if value else 0)
 
 
 def _decontaminate_channel(
@@ -355,8 +422,8 @@ def _content_masks(
     cell: Image.Image,
     bg: tuple[int, int, int],
     tolerance: int,
-) -> tuple[Image.Image, Image.Image, Optional[Image.Image]]:
-    """Build trim/alpha masks and optional chroma-decontaminated RGB."""
+) -> tuple[Image.Image, Image.Image, Optional[Image.Image], Image.Image]:
+    """Build trim/alpha masks, optional chroma-decontaminated RGB, and the key diff."""
     rgb = cell.convert("RGB")
     diff = _max_channel_difference(rgb, bg)
     trim_mask = diff.point(lambda p: 255 if p > tolerance else 0)
@@ -365,10 +432,10 @@ def _content_masks(
         chroma_alpha = _chroma_alpha(rgb, bg)
         alpha_mask = ImageChops.multiply(chroma_alpha, tolerance_gate)
         keyed_rgb = _decontaminate_rgb(rgb, chroma_alpha, bg)
-        return trim_mask, alpha_mask, keyed_rgb
+        return trim_mask, alpha_mask, keyed_rgb, diff
 
     alpha_mask = tolerance_gate.filter(ImageFilter.MinFilter(3))
-    return trim_mask, alpha_mask, None
+    return trim_mask, alpha_mask, None, diff
 
 
 def _keying_findings(
@@ -380,6 +447,9 @@ def _keying_findings(
     *,
     trim: bool,
     alpha: bool,
+    trim_mask: Optional[Image.Image] = None,
+    diff: Optional[Image.Image] = None,
+    notices: Optional[list[str]] = None,
 ) -> list[str]:
     """Report objective signs that the flat-background key did not take.
 
@@ -390,6 +460,11 @@ def _keying_findings(
     """
     findings: list[str] = []
     hex_bg = "#{:02X}{:02X}{:02X}".format(*cell_bg)
+
+    if alpha and trim and alpha_mask is not None and notices is not None:
+        notice = _backing_panel_notice(label, alpha_mask, bbox, cell_size)
+        if notice:
+            notices.append(notice)
 
     if alpha and alpha_mask is not None:
         px = alpha_mask.load()
@@ -427,18 +502,110 @@ def _keying_findings(
         if bbox[3] >= cell_height:
             touched_edges.append("bottom")
         if touched_edges:
-            findings.append(
-                f"{label}: content reaches the {'/'.join(touched_edges)} cell edge(s) "
-                f"(key background {hex_bg})"
-            )
+            drift = _edge_drift(trim_mask, diff, touched_edges)
+            if drift is not None:
+                count, distance, isolated = drift
+                if isolated:
+                    findings.append(
+                        f"{label}: {count} isolated pixel(s) on the "
+                        f"{'/'.join(touched_edges)} cell edge(s) exceed the key "
+                        f"tolerance (farthest {distance} from key {hex_bg}); this is "
+                        f"key drift, not content — rerun with --tolerance "
+                        f"{distance + _KEY_DRIFT_MARGIN} or higher"
+                    )
+                else:
+                    findings.append(
+                        f"{label}: {count} pixel(s) on the "
+                        f"{'/'.join(touched_edges)} cell edge(s) exceed the key "
+                        f"tolerance but all stay within {distance} of key {hex_bg}; "
+                        f"this is key noise (JPEG compression or a slightly off "
+                        f"key), not content — rerun with --tolerance "
+                        f"{distance + _KEY_DRIFT_MARGIN} or higher"
+                    )
+            else:
+                findings.append(
+                    f"{label}: content reaches the {'/'.join(touched_edges)} "
+                    f"cell edge(s) (key background {hex_bg})"
+                )
 
     return findings
+
+
+def _backing_panel_notice(
+    label: str,
+    alpha_mask: Image.Image,
+    bbox: tuple[int, int, int, int],
+    cell_size: tuple[int, int],
+) -> Optional[str]:
+    """Flag a trimmed element whose corners are opaque: a painted backing panel.
+
+    A cut-out silhouette almost never fills all four corners of its own
+    bounding box; a rectangle behind it does. The key cannot see the panel
+    (the gutters are clean), so this is advisory, never a strict failure.
+    """
+    left, top, right, bottom = bbox
+    if right - left < 2 * _PANEL_CORNER_INSET + 1 or bottom - top < 2 * _PANEL_CORNER_INSET + 1:
+        return None
+    cell_width, cell_height = cell_size
+    fill_w = (right - left) / cell_width if cell_width else 0.0
+    fill_h = (bottom - top) / cell_height if cell_height else 0.0
+    if min(fill_w, fill_h) < _PANEL_MIN_FILL:
+        return None
+    px = alpha_mask.load()
+    corners = (
+        (left + _PANEL_CORNER_INSET, top + _PANEL_CORNER_INSET),
+        (right - 1 - _PANEL_CORNER_INSET, top + _PANEL_CORNER_INSET),
+        (left + _PANEL_CORNER_INSET, bottom - 1 - _PANEL_CORNER_INSET),
+        (right - 1 - _PANEL_CORNER_INSET, bottom - 1 - _PANEL_CORNER_INSET),
+    )
+    opaque = sum(1 for x, y in corners if px[x, y] > _BOUNDARY_OPAQUE_ALPHA)
+    if opaque < 3:
+        return None
+    return (
+        f"{label}: the trimmed element fills {fill_w:.0%} x {fill_h:.0%} of its "
+        f"cell and is opaque in {opaque} of 4 corners; it "
+        "may sit on a painted backing panel the key could not remove — look at "
+        "the slice, and regenerate with the element alone on the key if so"
+    )
+
+
+def _edge_drift(
+    trim_mask: Optional[Image.Image],
+    diff: Optional[Image.Image],
+    touched_edges: list[str],
+) -> Optional[tuple[int, int, bool]]:
+    """Return (pixel count, max key distance, isolated) when every pixel on
+    the touched edges stays near the key, or None when real content reaches
+    an edge. ``isolated`` is True for a handful of stray pixels; False means
+    the whole edge is near-key noise (JPEG ringing, a slightly off key), which
+    is still keying drift rather than content."""
+    if trim_mask is None or diff is None:
+        return None
+    width, height = trim_mask.size
+    mask_px = trim_mask.load()
+    diff_px = diff.load()
+    coords = set()
+    if "left" in touched_edges:
+        coords.update((0, y) for y in range(height))
+    if "right" in touched_edges:
+        coords.update((width - 1, y) for y in range(height))
+    if "top" in touched_edges:
+        coords.update((x, 0) for x in range(width))
+    if "bottom" in touched_edges:
+        coords.update((x, height - 1) for x in range(width))
+    hits = [diff_px[x, y] for x, y in coords if mask_px[x, y]]
+    if not hits:
+        return None
+    distance = max(hits)
+    if distance > _KEY_DRIFT_MAX_TOLERANCE:
+        return None
+    return len(hits), distance, len(hits) <= _EDGE_DRIFT_MAX_PIXELS
 
 
 def _log_keying_findings(
     findings: list[str],
     *,
-    sheet_border: tuple[tuple[int, int, int], int] | None = None,
+    sheet_border: tuple[tuple[int, int, int], int, int] | None = None,
     tolerance: int,
 ) -> None:
     """Report incomplete flat-background keying."""
@@ -453,17 +620,49 @@ def _log_keying_findings(
     _log("       --bg <hex> and a larger --tolerance; use --inset when a drawn "
          "outer gutter is isolated from every element.")
     if sheet_border is not None:
-        dominant, drift = sheet_border
+        dominant, drift, outlier = sheet_border
         hex_bg = "#{:02X}{:02X}{:02X}".format(*dominant)
-        suggested_tolerance = max(tolerance, drift)
         _log(
             "       Measured outer 1% border/gutter: "
-            f"dominant {hex_bg}; max channel spread {drift}."
+            f"dominant {hex_bg}; key spread {drift}; farthest pixel {outlier} "
+            "from the key."
         )
-        _log(
-            "       Suggested rerun: "
-            f"--bg {hex_bg} --tolerance {suggested_tolerance}"
-        )
+        if outlier > _KEY_DRIFT_MAX_TOLERANCE:
+            _log(
+                "       The gutter holds pixels far from the key: content or an "
+                "effect crosses it. Regenerate with a clear key-only gutter; a "
+                "larger --tolerance would eat into the elements."
+            )
+        elif (
+            outlier <= tolerance
+            and any("content reaches the" in finding for finding in findings)
+            and not any("boundary pixels stayed opaque" in finding for finding in findings)
+        ):
+            # The key itself passed at this tolerance; only element tips
+            # crossed a gutter. When the farthest gutter pixel exceeds the
+            # tolerance the branch below still offers the rerun instead.
+            _log(
+                "       Content crosses a cell edge: no --bg/--tolerance rerun "
+                "can separate it. Regenerate with a wider key-only gutter "
+                "(each element about 65% of its cell, at least 10% key on "
+                "every side, tips and effects included)."
+            )
+        else:
+            pure = _nearest_pure_key(dominant)
+            if pure is not None:
+                # A pure key enables despill and soft-alpha recovery; keep it
+                # and widen the tolerance by the measured drift instead.
+                pure_rgb, pure_distance = pure
+                hex_bg = "#{:02X}{:02X}{:02X}".format(*pure_rgb)
+                drift += pure_distance
+                outlier += pure_distance
+            suggested_tolerance = max(
+                tolerance, drift, outlier + _KEY_DRIFT_MARGIN
+            )
+            _log(
+                "       Suggested rerun: "
+                f"--bg {hex_bg} --tolerance {suggested_tolerance}"
+            )
 
 
 def slice_sheet(
@@ -513,7 +712,8 @@ def slice_sheet(
             if suffix and suffix != ".png":
                 raise ValueError(f"--alpha requires .png output names, got {name!r}")
 
-    sheet = Image.open(sheet_path).convert("RGBA")
+    with Image.open(sheet_path) as source:
+        sheet = ImageOps.exif_transpose(source).convert("RGBA")
     sw, sh = sheet.size
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -522,6 +722,7 @@ def slice_sheet(
     prepared: list[tuple[int, int, Image.Image, Path]] = []
     written: list[Path] = []
     findings: list[str] = []
+    notices: list[str] = []
 
     idx = 0
     for r in range(rows):
@@ -541,7 +742,7 @@ def slice_sheet(
             bbox = None
             if trim or alpha:
                 cell_bg = bg if bg is not None else _sample_bg(cell, tolerance)
-                trim_mask, alpha_mask, keyed_rgb = _content_masks(
+                trim_mask, alpha_mask, keyed_rgb, diff = _content_masks(
                     cell, cell_bg, tolerance
                 )
                 bbox = trim_mask.getbbox()
@@ -549,7 +750,8 @@ def slice_sheet(
                     raise ValueError(f"cell ({r},{c}) is all background; no element was sliced")
                 findings.extend(_keying_findings(
                     f"cell ({r},{c})", cell.size, bbox, alpha_mask, cell_bg,
-                    trim=trim, alpha=alpha,
+                    trim=trim, alpha=alpha, trim_mask=trim_mask, diff=diff,
+                    notices=notices,
                 ))
 
             if trim and trim_mask is not None and alpha_mask is not None and bbox is not None:
@@ -585,6 +787,9 @@ def slice_sheet(
                 "strict alpha validation found incomplete background keying; "
                 "no output files were written"
             )
+
+    for notice in notices:
+        _log(f"[WARN] {notice}")
 
     for r, c, cell, out_path in prepared:
         cell.save(out_path)
@@ -643,7 +848,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bg", default=None,
         help="Background hex color for --trim/--alpha; an exact pure red/green/blue "
-             "key enables despill and soft-alpha recovery (default: auto-sample)",
+             "key enables despill and soft-alpha recovery, skipping opaque "
+             "foreground pixels of a key-like hue (default: auto-sample)",
     )
     parser.add_argument(
         "--tolerance", type=int, default=18,

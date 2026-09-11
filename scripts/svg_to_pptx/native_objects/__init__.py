@@ -10,13 +10,16 @@ import sys
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from pptx_shapes import validate_ooxml_xfrm
+
+from ..drawingml.utils import px_to_emu
 from ..drawingml.context import ConvertContext, ShapeResult
 from ..drawingml.utils import _xml_escape
 from .chart_data import _chart_data, _chart_plot_area_layout
 from .chart_style import (
     _axis_titles,
     _chart_companion_entries,
-    _chart_companion_text_xml,
+    _chart_companion_shapes,
     _chart_text_sizes,
     _chart_title_is_bounded,
     _classic_chart_style,
@@ -45,21 +48,22 @@ from .inline_formula import (
     inline_formula_marker_errors,
 )
 from .marker_common import (
-    CHART_CONTENT_TYPE,
-    CHARTEX_CONTENT_TYPE,
-    CHARTEX_REL_TYPE,
-    CHARTEX_URI,
+    _bounds,
     CHART_COLOR_STYLE_CONTENT_TYPE,
+    CHART_CONTENT_TYPE,
     CHART_REL_TYPE,
     CHART_STYLE_CONTENT_TYPE,
     CHART_URI,
-    _NATIVE_KINDS,
-    _bounds,
+    CHARTEX_CONTENT_TYPE,
+    CHARTEX_REL_TYPE,
+    CHARTEX_URI,
     _load_payload,
     _local_tag,
-    _native_marker_validation_context,
-    _validate_bounds_inputs,
+    _NATIVE_KINDS,
     native_marker_transform,
+    _native_marker_validation_context,
+    _powerpoint_emu,
+    _validate_bounds_inputs,
 )
 from .marker_attributes import (
     JSON_NATIVE_AUTHORITY,
@@ -269,10 +273,79 @@ def _source_chart_frame_xml(
     return ET.tostring(frame, encoding="unicode")
 
 
+_AXIS_LABEL_MARGIN_EM = 2.0  # PowerPoint's own auto layout reserves about this much for tick labels
+
+
+def _vertical_label_sides(chart_data: dict[str, Any]) -> set[str]:
+    """Frame sides (top/bottom) where a classic chart draws tick labels."""
+    kind = chart_data.get("kind")
+    chart_type = chart_data.get("type")
+    if kind == "combo":
+        horizontal_roles = ["category"]
+    elif kind == "category" and chart_type in {"area", "column", "line"}:
+        horizontal_roles = ["category"]
+    elif kind == "category" and chart_type == "bar":
+        horizontal_roles = ["value"]
+    else:
+        return set()
+    axes = chart_data.get("axes") if isinstance(chart_data.get("axes"), dict) else {}
+    sides: set[str] = set()
+    for role in horizontal_roles:
+        config = axes.get(role) if isinstance(axes.get(role), dict) else {}
+        if config.get("visible") is False or config.get("label_position") == "none":
+            continue
+        if role == "value" and not chart_data.get("show_value_axis_labels", True):
+            continue
+        sides.add(str(config.get("position") or "bottom"))
+    return sides
+
+
+def _grow_chart_frame_for_axis_labels(
+    chart_data: dict[str, Any] | None,
+    bounds: tuple[int, int, int, int],
+    *,
+    axis_font_px: float,
+) -> tuple[int, int, int, int]:
+    """Extend the chart frame past the plot so PowerPoint keeps the manual layout.
+
+    PowerPoint reads the plot area's manual y/h but discards them when the
+    strip between the plot edge and the frame edge cannot hold the tick
+    labels it lays out (about two em); it then auto-fits the plot to the
+    frame top and covers whatever was drawn above the plot. The frame is
+    invisible, so growing it outward on the label side costs nothing and
+    keeps the plot where the fallback drew it.
+    """
+    off_x, off_y, ext_cx, ext_cy = bounds
+    if chart_data is None:
+        return bounds
+    plot_area = chart_data.get("plot_area")
+    if not isinstance(plot_area, dict):
+        return bounds
+    required = px_to_emu(axis_font_px * _AXIS_LABEL_MARGIN_EM)
+    plot_top = _powerpoint_emu(plot_area["y"], "chart plot_area.y")
+    plot_bottom = plot_top + _powerpoint_emu(plot_area["height"], "chart plot_area.height", positive=True)
+    for side in _vertical_label_sides(chart_data):
+        if side == "bottom":
+            deficit = required - ((off_y + ext_cy) - plot_bottom)
+            if deficit > 0:
+                ext_cy += deficit
+        elif side == "top":
+            deficit = required - (plot_top - off_y)
+            if deficit > 0:
+                off_y -= deficit
+                ext_cy += deficit
+    return off_x, off_y, ext_cx, ext_cy
+
+
 def _build_native_chart(elem: ET.Element, ctx: ConvertContext, payload: dict[str, Any]) -> ShapeResult:
     source_package = _decode_source_chart_package(payload)
     chart_data = None if source_package is not None else _chart_data(payload)
-    off_x, off_y, ext_cx, ext_cy = _bounds(elem, payload, ctx)
+    text_sizes = _chart_text_sizes(payload, elem, ctx.inherited_styles)
+    off_x, off_y, ext_cx, ext_cy = _grow_chart_frame_for_axis_labels(
+        chart_data,
+        _bounds(elem, payload, ctx),
+        axis_font_px=text_sizes["axis"] / 75,
+    )
 
     shape_id = (
         ctx.claim_shape_id(
@@ -389,27 +462,54 @@ def _build_native_chart(elem: ET.Element, ctx: ConvertContext, payload: dict[str
 </a:graphic>
 </p:graphicFrame>'''
     )
+    chart_bounds = (off_x, off_y, off_x + ext_cx, off_y + ext_cy)
     if source_package is not None:
-        companion_xml = ""
-    else:
-        assert chart_data is not None
-        text_sizes = _chart_text_sizes(payload, elem, ctx.inherited_styles)
-        chart_style = _classic_chart_style(payload, elem, ctx.inherited_styles)
-        companion_xml = _chart_companion_text_xml(
-            ctx,
-            payload,
-            chart_bounds=(off_x, off_y, ext_cx, ext_cy),
-            chart_style=chart_style,
-            note_font_size=text_sizes["note"],
-            title_font_size=text_sizes["title"],
-            include_title=(
-                chart_data["kind"] == "chartex"
-                or _chart_title_is_bounded(payload)
-            ),
-            include_subtitle_as_caption=chart_data["kind"] == "chartex",
-        )
-    xml = chart_frame_xml + companion_xml
-    return ShapeResult(xml=xml, bounds_emu=(off_x, off_y, off_x + ext_cx, off_y + ext_cy))
+        return ShapeResult(xml=chart_frame_xml, bounds_emu=chart_bounds)
+
+    assert chart_data is not None
+    text_sizes = _chart_text_sizes(payload, elem, ctx.inherited_styles)
+    chart_style = _classic_chart_style(payload, elem, ctx.inherited_styles)
+    companions = _chart_companion_shapes(
+        ctx,
+        payload,
+        chart_bounds=(off_x, off_y, ext_cx, ext_cy),
+        chart_style=chart_style,
+        note_font_size=text_sizes["note"],
+        title_font_size=text_sizes["title"],
+        include_title=(
+            chart_data["kind"] == "chartex"
+            or _chart_title_is_bounded(payload)
+        ),
+        include_subtitle_as_caption=chart_data["kind"] == "chartex",
+        fallback=None if native_json_is_authoritative(elem) else elem,
+    )
+    if not companions:
+        return ShapeResult(xml=chart_frame_xml, bounds_emu=chart_bounds)
+
+    min_x, min_y, max_x, max_y = chart_bounds
+    for companion in companions:
+        assert companion.bounds_emu is not None
+        x0, y0, x1, y1 = companion.bounds_emu
+        min_x, min_y = min(min_x, x0), min(min_y, y0)
+        max_x, max_y = max(max_x, x1), max(max_y, y1)
+    group_w, group_h = max_x - min_x, max_y - min_y
+    validate_ooxml_xfrm(min_x, min_y, group_w, group_h)
+    group_id = ctx.next_id()
+    companion_xml = "".join(companion.xml for companion in companions)
+    # The marker owns one selectable/animatable unit. Identity mapping keeps
+    # the chart and labels at their already resolved slide coordinates.
+    xml = f'''<p:grpSp>
+<p:nvGrpSpPr>
+<p:cNvPr id="{group_id}" name="{name}"/>
+<p:cNvGrpSpPr/><p:nvPr/>
+</p:nvGrpSpPr>
+<p:grpSpPr><a:xfrm>
+<a:off x="{min_x}" y="{min_y}"/><a:ext cx="{group_w}" cy="{group_h}"/>
+<a:chOff x="{min_x}" y="{min_y}"/><a:chExt cx="{group_w}" cy="{group_h}"/>
+</a:xfrm></p:grpSpPr>
+{chart_frame_xml}{companion_xml}
+</p:grpSp>'''
+    return ShapeResult(xml=xml, bounds_emu=(min_x, min_y, max_x, max_y))
 
 
 def _validate_native_object_marker_payload(
@@ -566,8 +666,12 @@ def validate_native_object_marker_with_warnings(
         )
         if kind in {"chart", "table"} else []
     )
+    # The final checker reports these as warnings because activation is an
+    # export-time choice; ``--native-charts-and-tables`` refuses the same
+    # findings as errors, so say so where the author reads them.
     warnings.extend(
-        _projection_warnings_for_validated_marker(
+        f"{warning} (blocks --native-charts-and-tables export)"
+        for warning in _projection_warnings_for_validated_marker(
             elem,
             kind,
             payload,

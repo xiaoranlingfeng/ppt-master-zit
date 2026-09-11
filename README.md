@@ -8,7 +8,7 @@
 
 ## English
 
-**PPT Master + local ComfyUI image backend.** This is a personal-machine fork of [ppt-master](https://github.com/hugohe3/ppt-master) (v6.1.0, MIT, Copyright © 2025-2026 Hugo He). The entire editable-PPTX generation workflow is identical to upstream; the one difference is that **AI slide imagery defaults to your local ComfyUI running the "zit基础" workflow (Z-Image Turbo) — no API key, no cost, nothing leaves your machine.**
+**PPT Master + local ComfyUI image backend.** This is a personal-machine fork of [ppt-master](https://github.com/hugohe3/ppt-master) (v6.3.2, MIT, Copyright © 2025-2026 Hugo He). The entire editable-PPTX generation workflow is identical to upstream; the one difference is that **AI slide imagery defaults to your local ComfyUI running the "zit基础" workflow (Z-Image Turbo) — no API key, no cost, nothing leaves your machine.**
 
 ### What differs from upstream
 
@@ -27,7 +27,7 @@ New / modified files:
 - `references/image-generator.md` §4.5 — prompting rules for the local backend (natural language, 1–4 sentences, mandatory no-text clause)
 - `.env.example` / `.gitignore` / `README.md` — local config docs; personal `.env` is never committed
 
-Everything else matches upstream v6.1.0 (including the `--stage early` quality gate, native shape vocabulary, etc.).
+Everything else matches upstream v6.3.2 (including the `--stage early` quality gate, glyph-accurate text measurement, native chart/table mirroring, and the v6.3.x preview-server security fixes).
 
 ### Quick start
 
@@ -79,7 +79,7 @@ MIT — upstream copyright belongs to [Hugo He](https://github.com/hugohe3/ppt-m
 
 ## 中文
 
-**PPT Master + 本机 ComfyUI 配图后端** — 这是 [ppt-master](https://github.com/hugohe3/ppt-master) (v6.1.0, MIT, Copyright © 2025-2026 Hugo He) 的本机定制分支：整套可编辑 PPTX 生成工作流与官方一致，唯一区别是 **AI 配图默认走本机 ComfyUI 的「zit基础」工作流（Z-Image Turbo），不需要任何 API Key**。
+**PPT Master + 本机 ComfyUI 配图后端** — 这是 [ppt-master](https://github.com/hugohe3/ppt-master) (v6.3.2, MIT, Copyright © 2025-2026 Hugo He) 的本机定制分支：整套可编辑 PPTX 生成工作流与官方一致，唯一区别是 **AI 配图默认走本机 ComfyUI 的「zit基础」工作流（Z-Image Turbo），不需要任何 API Key**。
 
 ### 与上游的差异
 
@@ -98,7 +98,7 @@ MIT — upstream copyright belongs to [Hugo He](https://github.com/hugohe3/ppt-m
 - `references/image-generator.md` §4.5 — 本地后端的提示词规范（自然语言、1–4 句、强制无文字条款）
 - `.env.example` / `.gitignore` / `README.md` — 本机配置文档；含个人路径的 `.env` 永不入库
 
-其余文件与官方 v6.1.0 一致（含质量门禁 `--stage early`、原生形状词汇等上游能力）。
+其余文件与官方 v6.3.2 一致（含质量门禁 `--stage early`、真实字形宽度度量、原生图表/表格镜像导出、v6.3.x 预览服务器安全修复等上游能力）。
 
 ### 快速上手
 

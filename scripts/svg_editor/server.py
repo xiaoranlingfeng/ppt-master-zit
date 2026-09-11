@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 import xml.etree.ElementTree as ET
@@ -108,7 +109,7 @@ _SLIDE_CACHE_LOCK = threading.Lock()
 _SLIDE_CACHE: dict = {}  # path -> (mtime, (content, warnings))
 
 _LIST_CACHE_LOCK = threading.Lock()
-_LIST_CACHE: dict = {}  # path -> (mtime, annotation_count_on_disk)
+_LIST_CACHE: dict = {}  # path -> (mtime, (annotation_count_on_disk, ok, error))
 
 # Keep live preview on a separate range from Confirm UI so a stale preview tab
 # cannot send ``/api/shutdown`` to a later Confirm UI process.
@@ -455,6 +456,20 @@ def create_app(
 
     @app.before_request
     def _update_activity():
+        allowed_hosts = {PUBLIC_HOST, 'localhost', '::1', '[::1]'}
+        host = request.headers.get('Host', '').lower()
+        if host.startswith('[') or host.count(':') == 1:
+            host = re.sub(r':\d+$', '', host)
+        if host not in allowed_hosts:
+            return jsonify({'error': 'Forbidden Host header'}), 403
+        origin = request.headers.get('Origin')
+        if origin is not None:
+            try:
+                origin_host = urllib.parse.urlsplit(origin).hostname
+            except ValueError:
+                origin_host = None
+            if origin_host not in allowed_hosts:
+                return jsonify({'error': 'Forbidden Origin header'}), 403
         app.config['LAST_REQUEST_TIME'] = time.time()
 
     def _exit_with_lock_release(code: int = 0) -> None:
@@ -558,8 +573,8 @@ def create_app(
 
             ok = True
             error_msg: Optional[str] = None
-            disk_count = _cache_get(_LIST_CACHE, _LIST_CACHE_LOCK, path_str, mtime)
-            if disk_count is None:
+            cached = _cache_get(_LIST_CACHE, _LIST_CACHE_LOCK, path_str, mtime)
+            if cached is None:
                 try:
                     tree = ET.parse(path_str)
                     disk_count = len(parse_annotations(tree.getroot()))
@@ -568,7 +583,9 @@ def create_app(
                     error_msg = f'XML parse error: {exc}'
                     disk_count = 0
                     logger.warning('slide parse failed: %s: %s', svg_file.name, exc)
-                _cache_put(_LIST_CACHE, _LIST_CACHE_LOCK, path_str, mtime, disk_count)
+                _cache_put(_LIST_CACHE, _LIST_CACHE_LOCK, path_str, mtime, (disk_count, ok, error_msg))
+            else:
+                disk_count, ok, error_msg = cached
 
             if svg_file.name in annotations:
                 annotation_count = len(annotations[svg_file.name])
@@ -1065,26 +1082,35 @@ def _wait_for_ready(
     proc: subprocess.Popen,
     project_path: Path,
     timeout: int = STARTUP_TIMEOUT,
-) -> bool:
-    """Wait until this project's detached live-preview server responds."""
+) -> int:
+    """Wait until this project's detached live-preview server responds.
+
+    Returns the server pid recorded in the project lock, or 0 on timeout.
+    ``proc.pid`` is not used for identity: on Windows a venv ``python.exe``
+    may be a launcher whose child is the real interpreter.
+    """
     deadline = time.time() + timeout
     health_url = _server_url(port, '/api/health')
     last_error = ''
     while time.time() < deadline:
         if proc.poll() is not None:
             logger.error('live preview exited during startup (code=%s)', proc.returncode)
-            return False
+            return 0
         try:
             with urllib.request.urlopen(health_url, timeout=1) as response:
                 data = json.load(response)
+                lock = _read_lock(_lock_file(project_path))
+                server_pid = _lock_pid(lock)
                 if (
                     response.status == 200
                     and isinstance(data, dict)
                     and data.get('service') == 'live_preview'
                     and data.get('project') == str(project_path)
-                    and data.get('pid') == proc.pid
+                    and lock is not None
+                    and lock.get('port') == port
+                    and data.get('pid') == server_pid
                 ):
-                    return True
+                    return server_pid
                 last_error = 'health response belongs to another service or project'
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             last_error = str(exc)
@@ -1095,7 +1121,7 @@ def _wait_for_ready(
         timeout,
         f' (last error: {last_error})' if last_error else '',
     )
-    return False
+    return 0
 
 
 def _open_browser(url: str) -> bool:
@@ -1291,12 +1317,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             logger.error('cannot write live preview log: %s (%s)', log_path, exc)
             return 1
         url = _server_url(port)
-        if not _wait_for_ready(port, proc, project_path):
+        server_pid = _wait_for_ready(port, proc, project_path)
+        if not server_pid:
             if proc.poll() is None:
                 proc.terminate()
             logger.error('live preview failed to become reachable: %s (log: %s)', url, log_path)
             return 1
-        logger.info('started live preview in background: %s (pid=%s)', url, proc.pid)
+        logger.info('started live preview in background: %s (pid=%s)', url, server_pid)
         logger.info('log: %s', log_path)
         if not args.no_browser and not _open_browser(url):
             logger.info('browser did not auto-open; open %s manually', url)

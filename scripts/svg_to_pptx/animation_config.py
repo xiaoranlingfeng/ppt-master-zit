@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import statistics
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -80,6 +81,7 @@ class GroupTarget:
     chrome: bool = False
     structurally_static: bool = False
     has_hyperlink: bool = False
+    hidden_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,17 +116,103 @@ def is_chrome_id(elem_id: str | None) -> bool:
     return any(t in _CHROME_ID_TOKENS for t in tokens if t)
 
 
+_TITLE_BLOCK_TOKENS = frozenset({'header', 'footer'})
+_FONT_SIZE_RE = re.compile(r'font-size\s*:\s*([0-9.]+)')
+
+
+def _font_size_px(elem: ET.Element) -> float | None:
+    """Return an element's own font-size in px from its attribute or style."""
+    raw = elem.get('font-size')
+    if raw is None:
+        match = _FONT_SIZE_RE.search(elem.get('style') or '')
+        raw = match.group(1) if match else None
+    if raw is None:
+        return None
+    try:
+        return float(re.match(r'[0-9.]+', raw.strip()).group(0))
+    except (AttributeError, ValueError):
+        return None
+
+
+def _text_sizes(scope: ET.Element) -> list[float]:
+    """Return every declared font-size among text runs under ``scope``."""
+    return [
+        size
+        for elem in scope.iter()
+        if _tag_name(elem) in {'text', 'tspan'}
+        for size in (_font_size_px(elem),)
+        if size is not None
+    ]
+
+
+def _max_text_size(scope: ET.Element) -> float | None:
+    sizes = _text_sizes(scope)
+    return max(sizes) if sizes else None
+
+
+def _page_reference_size(root: ET.Element) -> float | None:
+    """Return the median of the page's distinct text sizes.
+
+    Running labels and page numbers sit below it; a title block sits at or
+    above it even when a hero numeral is the page's largest text.
+    """
+    distinct = sorted(set(_text_sizes(root)))
+    return statistics.median(distinct) if distinct else None
+
+
+def _holds_page_title(group: ET.Element, reference_size: float | None) -> bool:
+    """A header/footer-named group whose text reaches the page's median size
+    is the title block, not chrome."""
+    if reference_size is None:
+        return False
+    group_max = _max_text_size(group)
+    return group_max is not None and group_max >= reference_size - 1e-6
+
+
+def _names_title_block(group_id: str) -> bool:
+    tokens = re.split(r'[-_]', group_id.lower())
+    return any(t in _TITLE_BLOCK_TOKENS for t in tokens if t)
+
+
+def scan_root_primitives(svg_path: Path) -> dict[str, str]:
+    """Return id -> description for visible direct-root non-group elements."""
+    root = ET.parse(str(svg_path)).getroot()
+    primitives: dict[str, str] = {}
+    for child in root:
+        tag = _tag_name(child)
+        if tag in _NON_VISUAL_TAGS or tag == 'g':
+            continue
+        elem_id = usable_animation_group_id(child.get('id'))
+        if elem_id is None:
+            continue
+        role = child.get('data-pptx-role')
+        description = f'<{tag}>'
+        if role:
+            description += f' with data-pptx-role="{role}"'
+        primitives[elem_id] = description
+    return primitives
+
+
 def usable_animation_group_id(raw: str | None) -> str | None:
     """Return one nonblank SVG animation anchor verbatim, else ``None``."""
     return raw if raw and raw.strip() else None
 
 
-def scan_svg_targets(svg_path: Path) -> tuple[list[GroupTarget], list[str]]:
+def scan_svg_targets(
+    svg_path: Path,
+    *,
+    include_hidden: bool = False,
+) -> tuple[list[GroupTarget], list[str]]:
     """Scan one SVG for top-level visible group ids and anonymous groups."""
+    # The converter imports animation policy; defer this shared visibility scan.
+    from .drawingml.converter import collect_hidden_visuals
+
     root = ET.parse(str(svg_path)).getroot()
+    hidden_by_id = {id(element): reason for element, reason in collect_hidden_visuals(root)}
     targets: list[GroupTarget] = []
     anonymous_groups: list[str] = []
     visual_index = 0
+    page_reference_size = _page_reference_size(root)
 
     for child in root:
         tag = _tag_name(child)
@@ -133,9 +221,13 @@ def scan_svg_targets(svg_path: Path) -> tuple[list[GroupTarget], list[str]]:
         visual_index += 1
         if tag != 'g':
             continue
+        hidden_reason = hidden_by_id.get(id(child))
+        if hidden_reason and not include_hidden:
+            continue
         group_id = usable_animation_group_id(child.get('id'))
         if group_id is None:
-            anonymous_groups.append(f'{svg_path.stem}: top-level group #{visual_index}')
+            if hidden_reason is None:
+                anonymous_groups.append(f'{svg_path.stem}: top-level group #{visual_index}')
             continue
         role = child.get('data-pptx-role')
         placeholder = child.get('data-pptx-placeholder')
@@ -145,13 +237,23 @@ def scan_svg_targets(svg_path: Path) -> tuple[list[GroupTarget], list[str]]:
             has_explicit_semantics
             and is_static_page_frame(role, placeholder)
         )
-        structurally_static = has_structural_layer or semantic_static
+        # A static role/placeholder marker makes a group chrome (kept out of
+        # scaffold, listing, and automatic animation) but not structural: an
+        # explicit sidecar entry may still animate or Morph-pair it. Only a
+        # ``data-pptx-layer`` group is structural.
+        structurally_static = has_structural_layer
         if has_structural_layer:
             chrome = True
         elif has_explicit_semantics:
             chrome = semantic_static
         else:
             chrome = is_chrome_id(group_id)
+            if (
+                chrome
+                and _names_title_block(group_id)
+                and _holds_page_title(child, page_reference_size)
+            ):
+                chrome = False
         targets.append(
             GroupTarget(
                 slide=svg_path.stem,
@@ -159,6 +261,7 @@ def scan_svg_targets(svg_path: Path) -> tuple[list[GroupTarget], list[str]]:
                 order=visual_index,
                 chrome=chrome,
                 structurally_static=structurally_static,
+                hidden_reason=hidden_reason,
                 has_hyperlink=any(
                     _tag_name(descendant) == 'a'
                     or descendant.get(SHAPE_HYPERLINK_ATTR) is not None
@@ -199,6 +302,7 @@ def scan_project_targets(
     project_path: Path,
     *,
     svg_files: list[Path] | None = None,
+    include_hidden: bool = False,
 ) -> tuple[dict[str, list[GroupTarget]], list[str]]:
     """Scan selected SVG files, defaulting to ``svg_output/*.svg``."""
     targets_by_slide: dict[str, list[GroupTarget]] = {}
@@ -210,7 +314,7 @@ def scan_project_targets(
         svg_files = discover_slide_svgs(svg_dir)
 
     for svg_path in svg_files:
-        targets, anonymous = scan_svg_targets(svg_path)
+        targets, anonymous = scan_svg_targets(svg_path, include_hidden=include_hidden)
         targets_by_slide[svg_path.stem] = targets
         anonymous_groups.extend(anonymous)
 
@@ -1380,6 +1484,7 @@ def validate_animation_config(
     targets_by_slide, anonymous_groups = scan_project_targets(
         project_path,
         svg_files=svg_files,
+        include_hidden=True,
     )
     for item in anonymous_groups:
         warnings.append(f'{item} has no id and cannot be customized in animations.json')
@@ -1447,6 +1552,12 @@ def validate_animation_config(
                 )
                 continue
             target = known_groups[group_id]
+            if target.hidden_reason:
+                warnings.append(
+                    f'animations.json {path} references a group that is '
+                    f'hidden, not exported ({target.hidden_reason})'
+                )
+                continue
             if not isinstance(group_cfg, dict):
                 continue
             try:
@@ -1494,6 +1605,12 @@ def validate_animation_config(
                         f'animations.json {effect_path}.trigger_shape '
                         f'references missing group {trigger_shape!r}'
                     )
+                elif trigger_target.hidden_reason:
+                    warnings.append(
+                        f'animations.json {effect_path}.trigger_shape '
+                        f'references group {trigger_shape!r} that is hidden, '
+                        f'not exported ({trigger_target.hidden_reason})'
+                    )
                 elif trigger_target.structurally_static:
                     warnings.append(
                         f'animations.json {effect_path}.trigger_shape '
@@ -1512,6 +1629,14 @@ def validate_animation_config(
         config,
     )
     warnings.extend(morph_errors)
+    root_primitives_by_slide: dict[str, dict[str, str]] = {}
+    if morph_pairs:
+        scan_files = svg_files
+        if scan_files is None:
+            svg_dir = project_path / 'svg_output'
+            scan_files = discover_slide_svgs(svg_dir) if svg_dir.is_dir() else []
+        for svg_path in scan_files:
+            root_primitives_by_slide[svg_path.stem] = scan_root_primitives(svg_path)
     for pair in morph_pairs:
         for slide_name, group_id in (
             (pair.source_slide, pair.source_group_id),
@@ -1519,9 +1644,23 @@ def validate_animation_config(
         ):
             target = known_groups_by_slide.get(slide_name, {}).get(group_id)
             if target is None:
+                primitive = root_primitives_by_slide.get(slide_name, {}).get(group_id)
+                if primitive is not None:
+                    warnings.append(
+                        f'animations.json Morph endpoint {slide_name}/{group_id} '
+                        f'is a root primitive ({primitive}), not a direct-root '
+                        '<g>; wrap it in a group (drop a static role marker) '
+                        'before pairing'
+                    )
+                else:
+                    warnings.append(
+                        'animations.json Morph references missing or ambiguous group: '
+                        f'{slide_name}/{group_id}'
+                    )
+            elif target.hidden_reason:
                 warnings.append(
-                    'animations.json Morph references missing or ambiguous group: '
-                    f'{slide_name}/{group_id}'
+                    f'animations.json Morph endpoint {slide_name}/{group_id} '
+                    f'is hidden, not exported ({target.hidden_reason})'
                 )
             elif target.structurally_static:
                 warnings.append(
@@ -1586,15 +1725,24 @@ def build_group_listing(project_path: Path) -> tuple[list[str], list[str]]:
     listing reflects exactly what an editor can override. Returns
     ``(lines, anonymous_warnings)``.
     """
-    targets_by_slide, anonymous = scan_project_targets(project_path)
+    targets_by_slide, anonymous = scan_project_targets(project_path, include_hidden=True)
     lines: list[str] = []
     for slide_name, targets in targets_by_slide.items():
         _require_unique_target_ids(slide_name, targets)
-        ids = [t.group_id for t in targets if not t.chrome]
+        ids = [t.group_id for t in targets if not t.chrome and not t.hidden_reason]
+        chrome_ids = [t.group_id for t in targets if t.chrome and not t.hidden_reason]
+        hidden_ids = [t.group_id for t in targets if t.hidden_reason]
         if not ids:
-            lines.append(f'{slide_name}: (no animatable groups)')
+            line = f'{slide_name}: (no animatable groups)'
         else:
-            lines.append(f'{slide_name}: {", ".join(ids)}')
+            line = f'{slide_name}: {", ".join(ids)}'
+        if chrome_ids:
+            # Name what was dropped so an id like ``takeaway-rule`` is seen
+            # as chrome-by-token rather than silently missing.
+            line += f'  [chrome, animates only when named: {", ".join(chrome_ids)}]'
+        if hidden_ids:
+            line += f'  [hidden, not exported: {", ".join(hidden_ids)}]'
+        lines.append(line)
     return lines, anonymous
 
 

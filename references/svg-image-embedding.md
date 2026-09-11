@@ -11,7 +11,7 @@ Status names, resource lifecycle, and the embedding workflow for images in SVG p
 Each image carries an `Acquire Via` field plus a status. Default Generate's authority is `design_spec.md §VIII` plus its lock projection (run `analyze_images.py` after confirmation when user images are selected and complete the list before Executor); Quick's is the main agent's active-context decisions (explicit user paths first, unspecified acquisition resolved automatically, all preparation finished before SVG authoring without confirmation or a persisted roster).
 
 ```markdown
-| Filename | Dimensions | Purpose | Type | Layout pattern | Crop Policy | Acquire Via | Status | Reference |
+| Filename | Dimensions | Purpose | Type | Image pattern | Crop Policy | Acquire Via | Status | Reference |
 |----------|------------|---------|------|----------------|-------------|-------------|--------|-----------|
 | team.jpg | 800x600 | Team photo | Photography | `Put faces behind the hiring claim; #P1-02 + #M2-08 fading the photo edge into the page so copy meets it without a frame` | adaptive | web | Pending | Diverse engineering team in modern office |
 ```
@@ -50,4 +50,4 @@ Keep external references in `svg_output/` during generation; Default's `finalize
 
 `href` is the relative project path; `x`, `y`, `width`, `height` the display frame; `preserveAspectRatio` `xMidYMid slice` (center crop, like CSS `cover`), `xMidYMid meet` (complete display, like `contain`), or `none` (stretch — never for a `no-crop` source). A Base64 `data:` href is the `svg_final/` preview form produced by finalization, not an authoring form. `clipPath` on `<image>` is conditionally allowed under [`shared-standards-core.md`](./shared-standards-core.md) §1.2; when it does not fit, bake rounded corners into an alpha PNG before embedding.
 
-Project layout: `images/` (assets), `sources/` (source files and their `*_files/` images), `svg_output/` (external references), `svg_final/` (Default-only embedded preview). Preview `svg_output/` through `python3 -m http.server -d <project_path> 8000` (browsers block cross-directory images on directly opened files). Native export keeps original image bytes by default (`--image-sizing cap`); explicit compact export uses `--image-sizing display --image-scale 2 --image-quality 85`, and `--no-image-optimize` forces original bytes.
+Project layout: `images/` (assets), `sources/` (source files and their `*_files/` images), `svg_output/` (external references), `svg_final/` (Default-only embedded preview). Preview `svg_output/` through `python3 -m http.server -d <project_path> 8000` (browsers block cross-directory images on directly opened files). Image sizing and optimization flags at export: [`svg-pipeline.md`](../scripts/docs/svg-pipeline.md).

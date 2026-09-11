@@ -29,6 +29,16 @@
       "concept"
     ]
   },
+  "duty-manual": {
+    "summary": "Technical-manual method that gathers scattered rules onto one judgment axis — dark-field grid, mechanism before rule, every rule traceable to its mechanism page.",
+    "keywords": [
+      "technical-manual",
+      "dark-field-grid",
+      "mechanism-first",
+      "judgment-axis",
+      "line-drawing"
+    ]
+  },
   "incident-postmortem": {
     "summary": "Blameless incident review method that reconstructs a timeline, separates contributing factors from blame, and commits to verifiable actions.",
     "keywords": [
@@ -47,6 +57,16 @@
       "startup",
       "traction",
       "investor"
+    ]
+  },
+  "mbb-consulting": {
+    "summary": "Strategy-document method in the MBB consulting convention — answer-first argument at document density with numbered exhibits, a key-message column, footnotes, and action titles on every page.",
+    "keywords": [
+      "consulting",
+      "strategy-document",
+      "MBB-style",
+      "document-density",
+      "exhibits"
     ]
   },
   "narrative-keynote": {

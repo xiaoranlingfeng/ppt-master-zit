@@ -73,6 +73,7 @@ from .utils import (
     resolve_project_text_image_fill, resolve_url_id, get_effective_filter_id,
     parse_inline_style, parse_font_family, is_cjk_char,
     detect_text_lang, estimate_text_cluster_widths, font_px_to_hpt,
+    get_font_advances, primary_font_family,
     resolve_text_run_fonts, split_project_text_clusters,
     text_has_rtl_characters, text_uses_rtl,
     is_thick_circle_shorthand, parse_project_geometry_length,
@@ -82,6 +83,7 @@ from .utils import (
     parse_project_stroke_dasharray,
     quantize_ooxml_alpha,
     project_definition_index,
+    svg_hidden_reason,
     matrix_multiply, parse_transform_matrix, parse_transform_operations,
     transform_point, _xml_escape,
 )
@@ -306,6 +308,10 @@ def _valid_project_image_payload(img_format: str, img_data: bytes) -> bool:
             image.verify()
     except (UnidentifiedImageError, OSError, ValueError, SyntaxError):
         return False
+    if expected == 'JPEG' and actual == 'MPO':
+        # A camera multi-picture JPEG is a JPEG stream followed by sibling
+        # frames; every JPEG decoder renders its primary frame.
+        return True
     return actual == expected
 
 
@@ -761,6 +767,7 @@ def _shape_xfrm_from_svg_rect(
     off_y = px_to_emu(resolved_y)
     ext_cx = px_to_emu(resolved_w)
     ext_cy = px_to_emu(resolved_h)
+    validate_ooxml_xfrm(off_x, off_y, ext_cx, ext_cy)
     return '', off_x, off_y, ext_cx, ext_cy, (off_x, off_y, off_x + ext_cx, off_y + ext_cy)
 
 
@@ -2022,14 +2029,17 @@ _TEXTBOX_PADDING_MIN_PX = 0.5
 _TEXTBOX_PADDING_MAX_PX = 2.0
 _TEXTBOX_PADDING_RATIO = 0.04
 # Single-line auto-fit headroom interpolates between a low-caps base and an
-# all-caps ceiling for each run. The crude per-char width estimate undercounts
-# capitals most, so all-caps runs need the ceiling to keep wrap-ignoring
-# renderers (LibreOffice) from folding. Applying headroom per run also prevents
-# a short serif label from forcing a conservative serif multiplier onto an
-# otherwise sans-serif line. Values are calibrated against LibreOffice renders
-# of all-caps bold lines, with bases left above mixed-case and CJK render
-# ratios; exact ratios shift with font substitution, so these carry deliberate
-# margin rather than tracking one environment's numbers.
+# all-caps ceiling for each script segment of a run. The crude per-char width
+# estimate undercounts capitals most, so all-caps Latin segments need the
+# ceiling to keep wrap-ignoring renderers (LibreOffice) from folding. The
+# serif tier follows the typeface that draws the segment (``latin`` or ``ea``
+# as resolved by parse_font_family), so a CJK segment drawn by Microsoft YaHei
+# never takes the Times New Roman tier of the same stack, and a short serif
+# label cannot force its multiplier onto an otherwise sans-serif line. Values
+# are calibrated against LibreOffice renders of all-caps bold lines, with bases
+# left above mixed-case and CJK render ratios; exact ratios shift with font
+# substitution, so these carry deliberate margin rather than tracking one
+# environment's numbers.
 _TEXT_WIDTH_HEADROOM_BASE = 1.06
 _TEXT_WIDTH_HEADROOM_CAPS = 1.12
 _SERIF_TEXT_WIDTH_HEADROOM_BASE = 1.12
@@ -2094,7 +2104,21 @@ def _normalize_text_run_whitespace(
         (str(run.get('_xml_space', 'default')), str(run.get('text', '')))
         for run in runs
     ]
-    for index, text in normalize_project_text_segments(segments):
+    text_by_index = dict(normalize_project_text_segments(segments))
+    for index, source_run in enumerate(runs):
+        if '_inline_dx' in source_run:
+            # Insert after whitespace normalization so dx neither preserves
+            # indentation nor disappears with an empty/whitespace-only tspan.
+            run = {**source_run, 'text': ' ', 'letter_spacing': 0.0, 'text_decoration': 'none'}
+            dx = run.pop('_inline_dx')
+            run['letter_spacing'] = dx - _estimate_run_text_width(run)
+            run.update(text='\u00a0', _inline_dx=dx)
+            run.pop('_xml_space', None)
+            normalized.append(run)
+            continue
+        text = text_by_index.get(index)
+        if text is None:
+            continue
         run = {**runs[index], 'text': text}
         run.pop('_xml_space', None)
         normalized.append(run)
@@ -2109,21 +2133,167 @@ def _letter_spacing_to_drawingml_spc(letter_spacing_px: float) -> str:
     return f' spc="{spacing}"'
 
 
-def _is_serif_run(run: dict[str, Any]) -> bool:
-    """Return whether a text run uses a serif-like family."""
-    for family in str(run.get('font_family', '')).split(','):
-        name = family.strip().strip("'\"").lower()
-        if not name or name in {'sans-serif', 'sans serif'}:
-            continue
-        if name in _SERIF_WIDTH_FAMILIES:
-            return True
-        if 'serif' in name and 'sans' not in name:
-            return True
-    return False
+def _is_serif_face(typeface: str) -> bool:
+    """Return whether one resolved DrawingML typeface is serif-like."""
+    name = typeface.strip().strip("'\"").lower()
+    if not name or name in {'sans-serif', 'sans serif'}:
+        return False
+    if name in _SERIF_WIDTH_FAMILIES:
+        return True
+    return 'serif' in name and 'sans' not in name
+
+
+def _run_script_segments(run: dict[str, Any]) -> list[tuple[str, bool]]:
+    """Split one run's text into ``(text, is_cjk)`` segments.
+
+    PowerPoint draws CJK clusters (fullwidth punctuation included) with the
+    run's ``ea`` typeface and every other cluster with ``latin``, the same
+    split :func:`parse_font_family` resolves. Width headroom is a property of
+    the face that actually draws a glyph, so it is applied per segment.
+    """
+    segments: list[list[Any]] = []
+    for cluster in split_project_text_clusters(str(run.get('text', ''))):
+        cjk = any(is_cjk_char(ch) for ch in cluster)
+        if segments and segments[-1][1] == cjk:
+            segments[-1][0] += cluster
+        else:
+            segments.append([cluster, cjk])
+    return [(text, cjk) for text, cjk in segments]
+
+
+def _estimate_run_width_with_headroom(run: dict[str, Any]) -> float:
+    """Estimate one run with headroom chosen per script segment.
+
+    The serif/sans tier follows the typeface that draws each segment (``ea``
+    for CJK, ``latin`` otherwise), and the uppercase interpolation only ever
+    applies to the Latin segments: CJK advances are fixed-width, so a Chinese
+    sentence that mentions ``AI`` keeps its own base headroom instead of
+    inheriting the all-caps ceiling for the whole line.
+    """
+    segments = _run_script_segments(run)
+    if not segments:
+        return 0.0
+    faces = parse_font_family(str(run.get('font_family', '')))
+    serif_by_script = {
+        False: _is_serif_face(faces['latin']),
+        True: _is_serif_face(faces['ea']),
+    }
+    letter_spacing_px = (
+        drawingml_letter_spacing(
+            float(run.get('letter_spacing', 0.0) or 0.0)
+        )
+        / FONT_PX_TO_HUNDREDTHS_PT
+    )
+    width = 0.0
+    for text, cjk in segments:
+        segment = dict(run, text=text)
+        if serif_by_script[cjk]:
+            base = _SERIF_TEXT_WIDTH_HEADROOM_BASE
+            ceiling = _SERIF_TEXT_WIDTH_HEADROOM_CAPS
+        else:
+            base = _TEXT_WIDTH_HEADROOM_BASE
+            ceiling = _TEXT_WIDTH_HEADROOM_CAPS
+        caps = 0.0 if cjk else _uppercase_fraction([segment])
+        width += _estimate_run_text_width(segment) * (
+            base + (ceiling - base) * caps
+        )
+    # Splitting the run drops the tracking gap at each segment boundary; add
+    # it back unscaled so a negative gap is not amplified by the headroom of
+    # the segment that follows it. Headroom is a safety margin, so the result
+    # never falls below the run's raw advance either.
+    width += letter_spacing_px * (len(segments) - 1)
+    return max(width, _estimate_run_text_width(run))
+
+
+# Faces whose glyphs run wider than the generic advance table at the same
+# weight. Measured against the installed fonts on 2026-09-04: Arial Black
+# renders 24% wider than the caps estimate, Verdana 6%. Only factors ≥ 1 are
+# listed — a narrower face wastes space, a wider one overflows the bounds.
+# (mixed-case factor, all-caps factor): the generic table is already
+# pessimistic on lowercase and optimistic on capitals, so the correction
+# scales with the run's uppercase fraction like the headroom does.
+_WIDE_FAMILY_WIDTH_FACTORS = {
+    'arial black': (1.06, 1.25),
+    'verdana': (1.02, 1.08),
+}
+
+# Monospaced faces advance every Latin glyph by one fixed em fraction, so the
+# per-glyph table (tuned for proportional sans faces) undershoots them by
+# 14–22%: measured 2026-09-05 at 20px, Courier New, DejaVu Sans Mono and Noto
+# Sans Mono all render 0.600 em per character where the generic estimate gives
+# 0.46–0.50. A monospaced run is therefore measured as characters × advance
+# instead of scaled by a factor; CJK glyphs in these faces stay full-width and
+# keep the generic estimate. Advances are the faces' published hmtx values.
+_MONOSPACE_ADVANCE_EM = {
+    'andale mono': 0.60,
+    'cascadia code': 0.586,
+    'cascadia mono': 0.586,
+    'consolas': 0.55,
+    'courier': 0.60,
+    'courier new': 0.60,
+    'dejavu sans mono': 0.602,
+    'fira code': 0.60,
+    'fira mono': 0.60,
+    'hack': 0.602,
+    'ibm plex mono': 0.60,
+    'inconsolata': 0.50,
+    'jetbrains mono': 0.60,
+    'liberation mono': 0.60,
+    'lucida console': 0.60,
+    'menlo': 0.602,
+    'monaco': 0.60,
+    'monospace': 0.60,
+    'noto sans mono': 0.60,
+    'pt mono': 0.60,
+    'roboto mono': 0.60,
+    'sf mono': 0.602,
+    'source code pro': 0.60,
+    'ubuntu mono': 0.50,
+}
+
+
+def _run_primary_family(run: dict[str, Any]) -> str:
+    return primary_font_family(run.get('font_family'))
+
+
+# Fixed-pitch faces outside the table almost always say so in their name
+# (Cascadia Mono, Fira Code, Victor Mono, Noto Sans Mono CJK); 0.60 em is the
+# common advance of the Courier-derived and modern coding families alike.
+_MONOSPACE_NAME_HINTS = ('mono', 'code', 'courier', 'consol', 'typewriter')
+_MONOSPACE_DEFAULT_ADVANCE_EM = 0.60
+
+
+def _monospace_advance_em(run: dict[str, Any]) -> float | None:
+    """Return the fixed per-character advance of a monospaced run, if any."""
+    family = _run_primary_family(run)
+    if not family:
+        return None
+    advance = _MONOSPACE_ADVANCE_EM.get(family)
+    if advance is not None:
+        return advance
+    if any(hint in family for hint in _MONOSPACE_NAME_HINTS):
+        return _MONOSPACE_DEFAULT_ADVANCE_EM
+    return None
+
+
+def _family_width_factor(run: dict[str, Any]) -> float:
+    if get_font_advances(
+        run.get('font_family'),
+        str(run.get('font_weight', '400')),
+        str(run.get('font_style', 'normal')),
+    ) is not None:
+        return 1.0
+    factors = _WIDE_FAMILY_WIDTH_FACTORS.get(_run_primary_family(run))
+    if factors is None:
+        return 1.0
+    base, caps = factors
+    return base + (caps - base) * _uppercase_fraction([run])
 
 
 def _estimate_run_text_width(run: dict[str, Any]) -> float:
     """Estimate one run using the metrics actually emitted to DrawingML."""
+    if '_inline_dx' in run:
+        return float(run['_inline_dx'])
     text = str(run.get('text', ''))
     font_size_px = (
         font_px_to_hpt(float(run.get('font_size', 16)))
@@ -2133,17 +2303,38 @@ def _estimate_run_text_width(run: dict[str, Any]) -> float:
         text,
         font_size_px,
         str(run.get('font_weight', '400')),
+        font_family=run.get('font_family'),
+        font_style=str(run.get('font_style', 'normal')),
     )
+    clusters = split_project_text_clusters(text)
+    cjk_flags = [any(is_cjk_char(ch) for ch in cluster) for cluster in clusters]
+    monospace_advance = _monospace_advance_em(run)
+    if monospace_advance is not None:
+        # Fixed-pitch faces ignore weight and glyph shape for Latin text.
+        cluster_widths = [
+            width if cjk else monospace_advance * font_size_px
+            for cjk, width in zip(cjk_flags, cluster_widths)
+        ]
+    # The wide-face correction belongs to the Latin typeface only: CJK
+    # clusters draw with the ``ea`` face, so they neither widen with the
+    # family nor count toward its uppercase fraction.
+    latin_factor = _family_width_factor(dict(
+        run,
+        text=''.join(
+            cluster for cluster, cjk in zip(clusters, cjk_flags) if not cjk
+        ),
+    ))
+    cluster_widths = [
+        width if cjk else width * latin_factor
+        for cjk, width in zip(cjk_flags, cluster_widths)
+    ]
     letter_spacing_px = (
         drawingml_letter_spacing(
             float(run.get('letter_spacing', 0.0) or 0.0)
         )
         / FONT_PX_TO_HUNDREDTHS_PT
     )
-    return sum(cluster_widths) + letter_spacing_px * max(
-        len(cluster_widths) - 1,
-        0,
-    )
+    return sum(cluster_widths) + letter_spacing_px * max(len(cluster_widths) - 1, 0)
 
 
 def validate_text_run_advances(runs: list[dict[str, Any]]) -> None:
@@ -2191,28 +2382,28 @@ def _estimate_text_runs_width(
 
     ``include_headroom`` is useful for single-line auto-fit boxes where a
     renderer that measures text slightly wider would otherwise wrap. The
-    headroom scales independently with each run's family and uppercase
-    fraction. This keeps mixed-font lines from inheriting the most conservative
-    run's multiplier. Paragraph boxes use this value as a wrapping constraint,
-    so adding headroom there stretches the merged text frame beyond the
-    author's source line width.
+    headroom scales independently with each script segment's typeface and,
+    for Latin segments, its uppercase fraction. This keeps mixed-font and
+    mixed-script lines from inheriting the most conservative segment's
+    multiplier. Paragraph boxes use this value as a wrapping constraint, so
+    adding headroom there stretches the merged text frame beyond the author's
+    source line width.
     """
+    if any('_inline_dx' in run for run in runs):
+        # A negative dx moves the cursor back; it must not subtract space
+        # already occupied by earlier glyphs or make the frame extent negative.
+        advance = right = 0.0
+        for run in runs:
+            if '_inline_dx' in run:
+                advance += float(run['_inline_dx'])
+                continue
+            advance += _estimate_text_runs_width([run], include_headroom=include_headroom)
+            right = max(right, advance)
+        return right
     if not include_headroom:
         return sum(_estimate_run_text_width(run) for run in runs)
 
-    width = 0.0
-    for run in runs:
-        if _is_serif_run(run):
-            base = _SERIF_TEXT_WIDTH_HEADROOM_BASE
-            ceiling = _SERIF_TEXT_WIDTH_HEADROOM_CAPS
-        else:
-            base = _TEXT_WIDTH_HEADROOM_BASE
-            ceiling = _TEXT_WIDTH_HEADROOM_CAPS
-        caps = _uppercase_fraction([run])
-        width += _estimate_run_text_width(run) * (
-            base + (ceiling - base) * caps
-        )
-    return width
+    return sum(_estimate_run_width_with_headroom(run) for run in runs)
 
 
 def estimate_single_line_text_frame_width(
@@ -2298,6 +2489,10 @@ def _extract_text_bullet(
     runs: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Convert a leading text bullet marker into paragraph metadata."""
+    if any('_inline_dx' in run for run in runs):
+        # Keep positioned markers literal so bullet normalization cannot
+        # discard or relocate an authored displacement.
+        return runs, None
     first_nonspace = _first_nonspace_run(runs)
     if first_nonspace and (
         first_nonspace.get(_INLINE_FORMULA_KEY) is not None
@@ -2549,6 +2744,15 @@ def _collect_inline_runs(
             ctx,
             svg_hyperlink_href(container),
         )
+
+    if container_tag == 'tspan' and container.get('dx') is not None:
+        dx = parse_svg_length(
+            container.get('dx'),
+            percent_base=ctx.viewport_width,
+            font_size=float(own_attrs.get('font_size', 16)) / (ctx.scale_y or 1.0),
+        ) * ctx.scale_x
+        if dx:
+            runs.append({**own_attrs, 'text': '', '_inline_dx': dx})
 
     if container.text:
         run = {
@@ -2814,7 +3018,7 @@ def _coalesce_text_runs(
         text = str(run.get('text', ''))
         if not text:
             continue
-        if run.get(_INLINE_FORMULA_KEY) is not None:
+        if run.get(_INLINE_FORMULA_KEY) is not None or '_inline_dx' in run:
             merged.append({**run, 'text': text})
             previous_properties = None
             continue
@@ -3758,6 +3962,35 @@ def _nested_crop_clip_preset_geometry_error(
     )
 
 
+def _visible_clip_shapes(
+    clip: ET.Element,
+    parent_by_id: dict[int, ET.Element],
+) -> list[ET.Element]:
+    """Resolve clip children with the same inherited visibility as visuals."""
+    return [
+        child for child in clip
+        if child.tag not in _CLIP_NON_VISUAL_ELEMENTS
+        and svg_hidden_reason(child, parent_by_id) is None
+    ]
+
+
+def empty_clip_path_reason(
+    element: ET.Element,
+    definitions: dict[str, ET.Element],
+    parent_by_id: dict[int, ET.Element],
+) -> str | None:
+    """Identify a valid clip reference whose children are all hidden."""
+    clip_id = resolve_url_id(element.get('clip-path', ''))
+    clip = definitions.get(clip_id)
+    if clip is not None and clip.tag == f'{{{SVG_NS}}}clipPath':
+        if (
+            any(child.tag not in _CLIP_NON_VISUAL_ELEMENTS for child in clip)
+            and not _visible_clip_shapes(clip, parent_by_id)
+        ):
+            return f'empty clip: url(#{clip_id})'
+    return None
+
+
 def project_clip_path_errors(root: ET.Element) -> list[str]:
     """Return clip-path errors that would otherwise degrade picture geometry."""
     definitions, duplicates = project_definition_index(root)
@@ -3825,10 +4058,9 @@ def project_clip_path_errors(root: ET.Element) -> list[str]:
                 f'{clip_label} cannot use {", ".join(clip_rules)}; native '
                 'picture geometry has no equivalent winding-rule control'
             )
-        visual_children = [
-            child for child in list(clip)
-            if child.tag not in _CLIP_NON_VISUAL_ELEMENTS
-        ]
+        visual_children = _visible_clip_shapes(clip, parent_by_id)
+        if not visual_children and empty_clip_path_reason(elem, definitions, parent_by_id):
+            continue
         if len(visual_children) != 1:
             errors.add(
                 f'{clip_label} must contain exactly one direct supported shape'
@@ -3911,16 +4143,12 @@ def _resolve_clip_geometry(
     if clip_tag != 'clipPath':
         return DEFAULT
 
-    # Find the first shape child of the clipPath
-    shape = None
-    for child in clip_elem:
-        child_tag = child.tag.replace(f'{{{SVG_NS}}}', '')
-        if child_tag in ('circle', 'ellipse', 'rect', 'path', 'polygon'):
-            shape = child
-            break
-
-    if shape is None:
+    shapes = _visible_clip_shapes(clip_elem, ctx.parent_by_id)
+    if not shapes:
         return DEFAULT
+    if len(shapes) != 1:
+        raise ValueError('clipPath must contain exactly one direct supported shape')
+    shape = shapes[0]
 
     shape_tag = shape.tag.replace(f'{{{SVG_NS}}}', '')
     is_obb = clip_elem.get('clipPathUnits') == 'objectBoundingBox'
@@ -5165,17 +5393,12 @@ def _resolve_nested_svg_clip_geometry(
     if not clip_id or clip_id not in ctx.defs:
         return default
     clip_elem = ctx.defs[clip_id]
-    shape = next(
-        (
-            child
-            for child in clip_elem
-            if child.tag.rsplit('}', 1)[-1]
-            in {'circle', 'ellipse', 'rect', 'path', 'polygon'}
-        ),
-        None,
-    )
-    if shape is None:
+    shapes = _visible_clip_shapes(clip_elem, ctx.parent_by_id)
+    if not shapes:
         return default
+    if len(shapes) != 1:
+        raise ValueError('clipPath must contain exactly one direct supported shape')
+    shape = shapes[0]
     if (
         clip_elem.get('clipPathUnits', 'userSpaceOnUse')
         != 'userSpaceOnUse'
@@ -5233,7 +5456,7 @@ def _resolve_nested_svg_clip_geometry(
     )
 
 
-def convert_nested_svg(elem: ET.Element, ctx: ConvertContext) -> ShapeResult:
+def convert_nested_svg(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None:
     """Convert a nested <svg> sprite-crop wrapper to a DrawingML picture.
 
     Pattern produced by pptx_to_svg::
@@ -5247,6 +5470,8 @@ def convert_nested_svg(elem: ET.Element, ctx: ConvertContext) -> ShapeResult:
     """
     crop = parse_project_nested_svg_crop(elem)
     image_elem = crop.image
+    if empty_clip_path_reason(image_elem, ctx.defs, ctx.parent_by_id):
+        return None
     source = load_project_image_source(
         image_elem,
         ctx.svg_dir,

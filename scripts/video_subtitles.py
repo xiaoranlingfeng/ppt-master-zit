@@ -112,72 +112,88 @@ def _parse_srt(path: Path) -> list[SubtitleCue]:
     return cues
 
 
-def _display_length(text: str) -> int:
-    return sum(not character.isspace() for character in text)
+def _trim_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """Return the span with leading and trailing whitespace removed."""
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return start, end
 
 
-def _hard_split(text: str, max_chars: int) -> list[str]:
-    """Split an overlong clause without dropping characters."""
-    output: list[str] = []
-    remaining = text.strip()
-    while _display_length(remaining) > max_chars:
+def _display_length(text: str, start: int, end: int) -> int:
+    return sum(not character.isspace() for character in text[start:end])
+
+
+def _hard_split_span(
+    text: str,
+    span: tuple[int, int],
+    max_chars: int,
+) -> list[tuple[int, int]]:
+    """Split an overlong clause span without dropping characters."""
+    start, end = _trim_span(text, *span)
+    parts: list[tuple[int, int]] = []
+    while _display_length(text, start, end) > max_chars:
         visible = 0
-        split_at = 0
-        whitespace_split = 0
-        for index, character in enumerate(remaining, 1):
-            if character.isspace():
-                whitespace_split = index
+        split_at = start
+        whitespace_split = start
+        for index in range(start, end):
+            if text[index].isspace():
+                whitespace_split = index + 1
                 continue
             visible += 1
             if visible > max_chars:
                 break
-            split_at = index
-        if whitespace_split and whitespace_split <= split_at:
+            split_at = index + 1
+        if whitespace_split > start and whitespace_split <= split_at:
             split_at = whitespace_split
-        if split_at <= 0:
+        if split_at <= start:
             raise ValueError("Unable to split an overlong subtitle clause")
-        output.append(remaining[:split_at].strip())
-        remaining = remaining[split_at:].strip()
-    if remaining:
-        output.append(remaining)
-    return output
+        part = _trim_span(text, start, split_at)
+        if part[0] < part[1]:
+            parts.append(part)
+        start = _trim_span(text, split_at, end)[0]
+    part = _trim_span(text, start, end)
+    if part[0] < part[1]:
+        parts.append(part)
+    return parts
 
 
 def _split_sentence(text: str, max_chars: int) -> list[str]:
     """Keep one sentence unless its display length requires clause splitting."""
     sentence = re.sub(r"\s+", " ", text).strip()
-    if _display_length(sentence) <= max_chars:
+    if _display_length(sentence, 0, len(sentence)) <= max_chars:
         return [sentence]
 
-    clauses: list[str] = []
+    clauses: list[tuple[int, int]] = []
     start = 0
     for index, character in enumerate(sentence):
         if character not in _CLAUSE_END:
             continue
-        clause = sentence[start:index + 1].strip()
-        if clause:
+        clause = _trim_span(sentence, start, index + 1)
+        if clause[0] < clause[1]:
             clauses.append(clause)
         start = index + 1
-    tail = sentence[start:].strip()
-    if tail:
+    tail = _trim_span(sentence, start, len(sentence))
+    if tail[0] < tail[1]:
         clauses.append(tail)
 
     atoms = [
         part
         for clause in clauses
-        for part in _hard_split(clause, max_chars)
+        for part in _hard_split_span(sentence, clause, max_chars)
     ]
-    output: list[str] = []
+    merged: list[tuple[int, int]] = []
     for atom in atoms:
-        if not output:
-            output.append(atom)
+        if not merged:
+            merged.append(atom)
             continue
-        candidate = f"{output[-1]}{atom}"
-        if _display_length(candidate) <= max_chars:
-            output[-1] = candidate
+        candidate = (merged[-1][0], atom[1])
+        if _display_length(sentence, *candidate) <= max_chars:
+            merged[-1] = candidate
         else:
-            output.append(atom)
-    return output
+            merged.append(atom)
+    return [sentence[span_start:span_end] for span_start, span_end in merged]
 
 
 def _page_subtitle_paths(subtitle_dir: Path) -> list[Path]:

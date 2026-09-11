@@ -39,10 +39,16 @@ from svg_to_pptx.drawingml.utils import split_project_text_clusters  # noqa: E40
 _CLOSING_PUNCTUATION = frozenset(',.;:!?)]}、，。；：！？）》」』】”’')
 _OPENING_PUNCTUATION = frozenset('([{（《「『【“‘')
 _PREFERRED_BREAK_PUNCTUATION = frozenset('，。；：')
+# A CJK clause break is preferred over the greedy break only while it keeps
+# this share of the greedy line; below it the punctuation break would leave a
+# visibly short line, so the greedy fill wins.
+_PREFERRED_BREAK_MIN_FILL = 0.75
 _LATIN_TOKEN_CONNECTORS = frozenset("'’._:/+%@#-")
 _WEIGHTS = ('normal', 'bold', '100', '200', '300', '400', '500', '600', '700', '800', '900')
 _CALIBRATION_CJK_SAMPLE = '天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往'
 _CALIBRATION_LATIN_SAMPLE = 'Clear Slides Make Big Ideas Easy to See.'
+_CALIBRATION_CAPS_SAMPLE = 'CLEAR SLIDES MAKE BIG IDEAS EASY TO SEE.'
+_CALIBRATION_DIGITS_SAMPLE = '0123456789'
 _CORE_CALIBRATION_ROLES = ('body', 'title', 'subtitle', 'annotation')
 _SLIDE_HEADING_RE = re.compile(
     r'^#{3,6}[ \t]+Slide[ \t]+([0-9]+|NN)\b.*$',
@@ -92,7 +98,7 @@ def measure_text(
     """Measure one line with the checker-owned DrawingML estimator."""
     run = dict(
         text=text, font_size=size, font_family=family,
-        font_weight=weight, letter_spacing=letter_spacing,
+        font_weight=weight, font_style='normal', letter_spacing=letter_spacing,
     )
     return estimate_single_line_text_frame_width(
         [run],
@@ -237,7 +243,13 @@ def wrap_text(
             start += 1
             continue
 
-        line_end = preferred_end or end
+        line_end = end
+        if (
+            preferred_end
+            and fit_widths[preferred_end]
+            >= fit_widths[end] * _PREFERRED_BREAK_MIN_FILL - 1e-6
+        ):
+            line_end = preferred_end
         lines.append(_joined_units(units, start, line_end))
         widths.append(fit_widths[line_end])
         start = line_end
@@ -286,7 +298,10 @@ def _ordered_roles(roles: dict[str, tuple[str, float]]) -> list[tuple[str, str, 
     return [(name, *roles[name]) for name in names]
 
 
-def _roles_from_spec_lock(lock_path: Path) -> dict[str, tuple[str, float]]:
+def _roles_from_spec_lock(
+    lock_path: Path,
+    fallbacks: dict[str, str] | None = None,
+) -> dict[str, tuple[str, float]]:
     lock = parse_spec_lock(lock_path, report_duplicate_fields=True)
     typography = next(
         (
@@ -312,8 +327,11 @@ def _roles_from_spec_lock(lock_path: Path) -> dict[str, tuple[str, float]]:
             ) from exc
         family = rows.get(f'{role}_family', '')
         if not family:
-            fallback = 'title_family' if 'title' in role else 'body_family'
+            display_role = 'title' in role or 'numeral' in role
+            fallback = 'title_family' if display_role else 'body_family'
             family = rows.get(fallback, '') or rows.get('font_family', '')
+            if fallbacks is not None:
+                fallbacks[role] = fallback
         if not family:
             raise ValueError(
                 f'spec_lock.md typography role {role!r} has no resolvable font family'
@@ -330,6 +348,20 @@ def _clean_planned_line(raw: str) -> str:
     text = re.sub(r'\[([^]]+)\]\([^)]*\)', r'\1', text)
     text = text.replace('**', '').replace('__', '').replace('`', '')
     return ' '.join(text.split())
+
+
+_JOINED_BLOCK_SEPARATOR_RE = re.compile(r'\s+[·•|/]\s+|；|;\s')
+
+
+def _split_joined_blocks(text: str) -> list[str]:
+    """Split one outline value joined by spaced separators into planned lines.
+
+    A brief-depth Content field lists a page's blocks as ``A · B · C`` or
+    ``A；B；C`` on one line; each block is a planned line, not the whole list.
+    Unspaced ``·`` inside a name (``让·努维尔``) is left alone.
+    """
+    parts = [part.strip() for part in _JOINED_BLOCK_SEPARATOR_RE.split(text)]
+    return [part for part in parts if part]
 
 
 def _slide_id(token: str) -> str:
@@ -392,7 +424,7 @@ def _outline_candidates(
                 line_index += 1
                 continue
 
-            content_lines = [value] if value else []
+            content_lines = _split_joined_blocks(value) if value else []
             next_index = line_index + 1
             while next_index < len(lines):
                 next_field = _OUTLINE_DATA_LINE_RE.match(lines[next_index])
@@ -403,7 +435,7 @@ def _outline_candidates(
                     break
                 planned_line = _clean_planned_line(lines[next_index])
                 if planned_line:
-                    content_lines.append(planned_line)
+                    content_lines.extend(_split_joined_blocks(planned_line))
                 next_index += 1
             if 'body' in candidates:
                 candidates['body'].extend((slide, text) for text in content_lines)
@@ -453,15 +485,20 @@ def _calibration_payload(
     )
     cjk_length = len(split_project_text_clusters(_CALIBRATION_CJK_SAMPLE))
     latin_length = len(split_project_text_clusters(_CALIBRATION_LATIN_SAMPLE))
+    digits_length = len(split_project_text_clusters(_CALIBRATION_DIGITS_SAMPLE))
     role_rows = {}
     for name, family, size in roles:
         cjk_width = measure_text(_CALIBRATION_CJK_SAMPLE, size=size, family=family)
         latin_width = measure_text(_CALIBRATION_LATIN_SAMPLE, size=size, family=family)
+        caps_width = measure_text(_CALIBRATION_CAPS_SAMPLE, size=size, family=family)
+        digits_width = measure_text(_CALIBRATION_DIGITS_SAMPLE, size=size, family=family)
         role_rows[name] = {
             'family': family,
             'size': size,
             'cjk_chars_per_100px': round(100.0 * cjk_length / cjk_width, 1),
             'latin_chars_per_100px': round(100.0 * latin_length / latin_width, 1),
+            'caps_chars_per_100px': round(100.0 * latin_length / caps_width, 1),
+            'digits_chars_per_100px': round(100.0 * digits_length / digits_width, 1),
             'longest_planned_line': longest[name],
         }
     return {
@@ -473,10 +510,30 @@ def _calibration_payload(
     }
 
 
+def _fallback_notes(
+    roles: dict[str, tuple[str, float]],
+    fallbacks: dict[str, str],
+) -> list[str]:
+    """Flag display-sized roles that inherited body_family by default."""
+    body = roles.get('body')
+    if body is None:
+        return []
+    notes = []
+    for role, fallback in sorted(fallbacks.items()):
+        size = roles[role][1]
+        if fallback == 'body_family' and size >= 2 * body[1]:
+            notes.append(
+                f'role {role} ({_format_number(size)}px, at least twice body) has '
+                f'no {role}_family and uses body_family; declare {role}_family '
+                'if it is display type'
+            )
+    return notes
+
+
 def _render_calibration_table(payload: dict[str, object], *, include_outline: bool) -> str:
     role_rows = payload['roles']
     assert isinstance(role_rows, dict)
-    headers = ['role', 'family', 'size', 'CJK ≈chars/100px', 'Latin ≈chars/100px']
+    headers = ['role', 'family', 'size', 'CJK ≈chars/100px', 'Latin ≈chars/100px', 'CAPS ≈chars/100px', 'DIGITS ≈chars/100px']
     if include_outline:
         headers.append('longest planned line (px, slide, text)')
     lines = [
@@ -492,6 +549,8 @@ def _render_calibration_table(payload: dict[str, object], *, include_outline: bo
             _format_number(float(raw_row['size'])),
             f'{raw_row["cjk_chars_per_100px"]:.1f}',
             f'{raw_row["latin_chars_per_100px"]:.1f}',
+            f'{raw_row["caps_chars_per_100px"]:.1f}',
+            f'{raw_row["digits_chars_per_100px"]:.1f}',
         ]
         if include_outline:
             planned = raw_row['longest_planned_line']
@@ -501,6 +560,27 @@ def _render_calibration_table(payload: dict[str, object], *, include_outline: bo
                 else f'{planned["px"]:.1f}px, {planned["slide"]}, {planned["text"]}'
             )
         lines.append(' | '.join(row))
+    for note in payload.get('notes') or []:
+        lines.append(f'[NOTE] {note}')
+    lines.append(
+        '[NOTE] mixed line width ≈ (CJK chars ÷ CJK rate + other chars ÷ Latin '
+        'rate) × 100; spaces and punctuation count as Latin, digits use the '
+        'DIGITS rate.'
+    )
+    if include_outline:
+        lines.append(
+            '[NOTE] the longest planned line is the §IX wording; a line rewritten '
+            'while authoring (an expanded title, a longer label) is re-estimated '
+            'with the rates — the outline column does not cover it.'
+        )
+    lines.append(
+        '[NOTE] rates are sample averages measured with the checker\'s '
+        'estimator (headroom included); the checker measures each real line '
+        'glyph by glyph, so capital-heavy words (WebGPU, GDP), digits (1935, '
+        '83.2%) and wide letters run wider than the Latin rate — use the CAPS '
+        'rate for acronyms and uppercase, the DIGITS rate for numbers, and keep '
+        'about 5% below any bounds width.'
+    )
     return '\n'.join(lines) + '\n'
 
 
@@ -520,9 +600,15 @@ def _run_calibrate(args: argparse.Namespace) -> int:
         )
         return 2
     try:
-        roles = _roles_from_spec_lock(lock_path) if lock_path.is_file() else {}
+        fallbacks: dict[str, str] = {}
+        roles = (
+            _roles_from_spec_lock(lock_path, fallbacks)
+            if lock_path.is_file()
+            else {}
+        )
         for name, family, size in args.role:
             roles[name] = (family, size)
+            fallbacks.pop(name, None)
         ordered_roles = _ordered_roles(roles)
         if not ordered_roles:
             raise ValueError('no typography size roles were found')
@@ -533,8 +619,22 @@ def _run_calibrate(args: argparse.Namespace) -> int:
             source=source,
             include_outline=args.outline,
         )
+        payload['notes'] = _fallback_notes(roles, fallbacks)
         output_path = project_path / 'validation' / 'text_calibration.json'
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        if args.role and output_path.is_file():
+            # A --role run recalibrates only the named roles; keep the roles
+            # an earlier run already wrote, so "calibrate again only for a
+            # role never calibrated" is incremental, not a table overwrite.
+            try:
+                previous = json.loads(output_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                previous = {}
+            previous_roles = previous.get('roles') if isinstance(previous, dict) else None
+            if isinstance(previous_roles, dict):
+                merged = dict(previous_roles)
+                merged.update(payload['roles'])
+                payload['roles'] = merged
         rendered_json = json.dumps(payload, ensure_ascii=False, indent=2)
         output_path.write_text(rendered_json + '\n', encoding='utf-8')
     except (OSError, ValueError) as exc:
@@ -590,7 +690,15 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate = subparsers.add_parser('calibrate', help='Calibrate project typography roles.')
     calibrate.add_argument('project_path', type=Path)
     calibrate.add_argument('--outline', action='store_true')
-    calibrate.add_argument('--role', action='append', type=_role_argument, default=[])
+    calibrate.add_argument(
+        '--role',
+        action='append',
+        type=_role_argument,
+        default=[],
+        metavar='NAME:FAMILY:SIZE',
+        help='Typography role to calibrate when spec_lock.md is absent, e.g. '
+             'body:"Microsoft YaHei":20; repeatable.',
+    )
     calibrate.add_argument('--json', action='store_true')
     for command in (measure, wrap, box):
         command.add_argument('--json', action='store_true')
