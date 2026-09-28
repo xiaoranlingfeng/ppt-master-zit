@@ -1,8 +1,9 @@
 ---
 name: ppt-master-zit
 description: >
-  PPT Master with local ComfyUI「zit基础」image backend (Z-Image Turbo via
-  localhost:8188). Same editable-PPTX generation, reconstruction, template,
+  PPT Master with local ComfyUI image backend (Qwen-Image-2.1 t2i via
+  localhost:8188; legacy Z-Image Turbo「zit基础」workflow selectable).
+  Same editable-PPTX generation, reconstruction, template,
   and enhancement workflow as ppt-master, but AI 配图默认走本机 ComfyUI.
   Use when the user explicitly asks for ppt-master-zit / zit 版, or wants
   decks whose images come from the local ComfyUI queue.

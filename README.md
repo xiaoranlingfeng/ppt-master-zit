@@ -8,21 +8,22 @@
 
 ## English
 
-**PPT Master + local ComfyUI image backend.** This is a personal-machine fork of [ppt-master](https://github.com/hugohe3/ppt-master) (v6.6.0, MIT, Copyright © 2025-2026 Hugo He). The entire editable-PPTX generation workflow is identical to upstream; the one difference is that **AI slide imagery defaults to your local ComfyUI running the "zit基础" workflow (Z-Image Turbo) — no API key, no cost, nothing leaves your machine.**
+**PPT Master + local ComfyUI image backend.** This is a personal-machine fork of [ppt-master](https://github.com/hugohe3/ppt-master) (v6.6.0, MIT, Copyright © 2025-2026 Hugo He). The entire editable-PPTX generation workflow is identical to upstream; the one difference is that **AI slide imagery defaults to your local ComfyUI running the Qwen-Image-2.1 text-to-image workflow — no API key, no cost, nothing leaves your machine.** The legacy "zit基础" (Z-Image Turbo) workflow stays selectable as a speed-first fallback.
 
 ### What differs from upstream
 
 | | Official ppt-master | ppt-master-zit |
 |---|---|---|
 | Image backend | openai / gemini / qwen and other cloud APIs | all preserved, **plus a new local `comfyui` backend, enabled by default** |
-| Generation engine | cloud models | local ComfyUI "zit基础" = Z-Image Turbo (bf16) + qwen_3_4b |
-| Cost | per-API billing | free (local GPU; ~10–25 s per 1K image, tested on RTX 3080 Laptop) |
+| Generation engine | cloud models | local ComfyUI = Qwen-Image-2.1 (7B DiT int8 + Qwen3-VL 8B int8); fallback "zit基础" Z-Image Turbo |
+| Cost | per-API billing | free (local GPU; ~15–25 s per 1K image at 25 steps, tested on RTX 3080 Laptop) |
 | Privacy | prompts leave the machine | fully local |
 
 New / modified files:
 
-- `scripts/image_backends/backend_comfyui.py` — ComfyUI HTTP API backend: prompt injection, resolution computed from `aspect_ratio × image_size` (nearest multiple of 8), fresh random seed per run, node-level failure reporting, `trust_env=False` direct connection (immune to system proxy interception)
-- `templates/comfyui/zit_basic_api.json` — API-format export of the "zit基础" workflow (Z-Image Turbo recommended sampling: steps 8 / cfg 1 / res_multistep / simple / shift 3)
+- `scripts/image_backends/backend_comfyui.py` — ComfyUI HTTP API backend: prompt injection (CLIPTextEncode or TextEncodeQwenImage21), resolution computed from `aspect_ratio × image_size` (nearest multiple of 32), fresh random seed per run, node-level failure reporting, `trust_env=False` direct connection (immune to system proxy interception)
+- `templates/comfyui/qwen_image_2_1_t2i_api.json` — API-format export of the `image_qwen_image_2_1_t2i` workflow (Qwen-Image-2.1 official path: steps 25 / cfg 1 / euler / simple; native RGBA transparency via prompt wrapping)
+- `templates/comfyui/zit_basic_api.json` — legacy "zit基础" workflow (Z-Image Turbo: steps 8 / cfg 1 / res_multistep / simple / shift 3), selectable via `COMFY_WORKFLOW`
 - `scripts/image_gen.py` — registers the `comfyui` backend (aliases: comfy / zit)
 - `references/image-generator.md` §4.5 — prompting rules for the local backend (natural language, 1–4 sentences, mandatory no-text clause)
 - `.env.example` / `.gitignore` / `README.md` — local config docs; personal `.env` is never committed
@@ -31,11 +32,11 @@ Everything else matches upstream v6.6.0 (including glyph-accurate text measureme
 
 ### Quick start
 
-1. Install [ComfyUI](https://github.com/comfyanonymous/ComfyUI) (any distribution or integrated pack) with the Z-Image Turbo models in place:
-   - `diffusion_models/zit/z_image_turbo_bf16.safetensors`
-   - `text_encoders/qwen_3_4b.safetensors`
-   - `vae/ae.safetensors`
-   (models from [Comfy-Org/z_image_turbo](https://huggingface.co/Comfy-Org/z_image_turbo))
+1. Install [ComfyUI](https://github.com/comfyanonymous/ComfyUI) (any distribution or integrated pack) with the Qwen-Image-2.1 models in place:
+   - `diffusion_models/qwen image 2.1/qwen_image_2.1_int8_convrot.safetensors` (or bf16)
+   - `text_encoders/qwen3vl_8b_int8_convrot.safetensors`
+   - `vae/qwen_image_2.1_vae_bf16.safetensors`
+   (models from [Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1); weights are free but the Qwen Research License bars commercial use without a separate agreement)
 2. Drop this folder into your agent's skills directory (e.g. `~/.hermes/skills/`, `~/.agents/skills/`), or use it with any agent that can execute Python.
 3. Copy `.env.example` to `.env` and set at least:
    ```ini
@@ -62,9 +63,11 @@ python scripts/image_gen.py "students collaborating in a bright classroom, flat 
 | `COMFY_TIMEOUT` / `COMFY_START_TIMEOUT` | `900` / `300` | per-image / cold-boot wait limits (seconds) |
 | `IMAGE_CONCURRENCY` | `2` | local GPU serializes; keep at 1–2 |
 
-### Prompting tips (Z-Image Turbo)
+### Prompting tips (Qwen-Image-2.1)
 
 - Write flowing natural-language sentences (subject → scene → lighting → style), not tag soup; Chinese or English both work
+- Native transparent cutouts: wrap the prompt as `This is an RGBA format image with transparency. <subject>. The image has an alpha channel and a transparent background.` and save PNG — no chroma-key despill step needed
+- Keep cfg at 1 (official path); negative prompts have no effect there
 - **Every prompt must end with** "画面中不出现任何文字、字母、数字或水印" / "Strictly no text, no letters, no numbers, no watermarks anywhere."
 - For abstract-concept section art, prefer English prompts — Chinese concept words can get rendered into the image as gibberish glyphs, which the no-text clause alone cannot prevent
 - Visually inspect every generated image; re-roll any that contain text
@@ -79,21 +82,22 @@ MIT — upstream copyright belongs to [Hugo He](https://github.com/hugohe3/ppt-m
 
 ## 中文
 
-**PPT Master + 本机 ComfyUI 配图后端** — 这是 [ppt-master](https://github.com/hugohe3/ppt-master) (v6.6.0, MIT, Copyright © 2025-2026 Hugo He) 的本机定制分支：整套可编辑 PPTX 生成工作流与官方一致，唯一区别是 **AI 配图默认走本机 ComfyUI 的「zit基础」工作流（Z-Image Turbo），不需要任何 API Key**。
+**PPT Master + 本机 ComfyUI 配图后端** — 这是 [ppt-master](https://github.com/hugohe3/ppt-master) (v6.6.0, MIT, Copyright © 2025-2026 Hugo He) 的本机定制分支：整套可编辑 PPTX 生成工作流与官方一致，唯一区别是 **AI 配图默认走本机 ComfyUI 的 Qwen-Image-2.1 文生图工作流，不需要任何 API Key**。旧「zit基础」（Z-Image Turbo）工作流保留为可切换的高速备选。
 
 ### 与上游的差异
 
 | 项 | 官方 ppt-master | 本仓库 ppt-master-zit |
 |---|---|---|
 | 图片后端 | openai / gemini / qwen 等云端 API | 全部保留，**新增 `comfyui` 本地后端并默认启用** |
-| 出图引擎 | 云端模型 | 本机 ComfyUI「zit基础」= Z-Image Turbo (bf16) + qwen_3_4b |
-| 费用 | 按 API 计费 | 免费（本地 GPU，约 10~25 秒/张 @1K，实测 RTX 3080 Laptop） |
+| 出图引擎 | 云端模型 | 本机 ComfyUI = Qwen-Image-2.1（7B DiT int8 + Qwen3-VL 8B int8）；备选「zit基础」Z-Image Turbo |
+| 费用 | 按 API 计费 | 免费（本地 GPU，约 15~25 秒/张 @1K、25 步，实测 RTX 3080 Laptop） |
 | 隐私 | 提示词出网 | 完全本机 |
 
 新增/修改的文件：
 
-- `scripts/image_backends/backend_comfyui.py` — ComfyUI HTTP API 后端：提示词注入、按 aspect_ratio×image_size 计算分辨率（8 的倍数）、每次随机种子、失败节点报错透出、`trust_env=False` 直连（不受系统代理劫持）
-- `templates/comfyui/zit_basic_api.json` — 「zit基础」工作流的 API 格式模板（Z-Image Turbo 推荐采样：steps 8 / cfg 1 / res_multistep / simple / shift 3）
+- `scripts/image_backends/backend_comfyui.py` — ComfyUI HTTP API 后端：提示词注入（CLIPTextEncode 或 TextEncodeQwenImage21）、按 aspect_ratio×image_size 计算分辨率（32 的倍数）、每次随机种子、失败节点报错透出、`trust_env=False` 直连（不受系统代理劫持）
+- `templates/comfyui/qwen_image_2_1_t2i_api.json` — `image_qwen_image_2_1_t2i` 工作流的 API 格式模板（Qwen-Image-2.1 官方路径：steps 25 / cfg 1 / euler / simple；提示词包裹即可原生出 RGBA 透明图）
+- `templates/comfyui/zit_basic_api.json` — 旧「zit基础」工作流（Z-Image Turbo：steps 8 / cfg 1 / res_multistep / simple / shift 3），经 `COMFY_WORKFLOW` 切换
 - `scripts/image_gen.py` — 注册 `comfyui` 后端（别名 comfy / zit）
 - `references/image-generator.md` §4.5 — 本地后端的提示词规范（自然语言、1–4 句、强制无文字条款）
 - `.env.example` / `.gitignore` / `README.md` — 本机配置文档；含个人路径的 `.env` 永不入库
@@ -102,11 +106,11 @@ MIT — upstream copyright belongs to [Hugo He](https://github.com/hugohe3/ppt-m
 
 ### 快速上手
 
-1. 安装 [ComfyUI](https://github.com/comfyanonymous/ComfyUI)（任意发行版/整合包均可），放好 Z-Image Turbo 模型：
-   - `diffusion_models/zit/z_image_turbo_bf16.safetensors`
-   - `text_encoders/qwen_3_4b.safetensors`
-   - `vae/ae.safetensors`
-   （模型来自 [Comfy-Org/z_image_turbo](https://huggingface.co/Comfy-Org/z_image_turbo)）
+1. 安装 [ComfyUI](https://github.com/comfyanonymous/ComfyUI)（任意发行版/整合包均可），放好 Qwen-Image-2.1 模型：
+   - `diffusion_models/qwen image 2.1/qwen_image_2.1_int8_convrot.safetensors`（或 bf16）
+   - `text_encoders/qwen3vl_8b_int8_convrot.safetensors`
+   - `vae/qwen_image_2.1_vae_bf16.safetensors`
+   （模型来自 [Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1)；权重免费下载，但 Qwen Research License 限制商用，需另行申请授权）
 2. 把本仓库放进你的 agent skills 目录（如 `~/.hermes/skills/`、`~/.agents/skills/`），或作为任意能执行 Python 的 agent 的技能文件夹。
 3. 复制 `.env.example` 为 `.env`，至少设置：
    ```ini
@@ -133,9 +137,11 @@ python scripts/image_gen.py "明亮教室里的学生协作，扁平插画，暖
 | `COMFY_TIMEOUT` / `COMFY_START_TIMEOUT` | `900` / `300` | 出图 / 冷启动等待上限（秒） |
 | `IMAGE_CONCURRENCY` | `2` | 本地 GPU 串行，建议 1–2 |
 
-### 提示词要点（Z-Image Turbo）
+### 提示词要点（Qwen-Image-2.1）
 
 - 自然语言整句（主体→场景→光影→风格），不要标签堆砌；中文英文皆可
+- 原生透明抠图：提示词包裹 `This is an RGBA format image with transparency. <主体>. The image has an alpha channel and a transparent background.`，存 PNG 即带 alpha，无需绿幕抠色流程
+- cfg 保持 1（官方路径），此时负面词不生效
 - **每句必须带**「画面中不出现任何文字、字母、数字或水印」/ "Strictly no text, no letters, no numbers, no watermarks anywhere."
 - 抽象概念类章节图慎用中文概念词——模型可能把词直接画成乱码假字，改英文更安全
 - 出图后逐张目检，有字即改 prompt 重跑 manifest

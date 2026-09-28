@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """
-Local ComfyUI image generation backend (zit基础 workflow).
+Local ComfyUI image generation backend (Qwen-Image-2.1 t2i workflow).
 
-Runs the exported "zit基础" workflow (Z-Image Turbo) against a locally
-running ComfyUI server via its HTTP API. No API key is required.
+Runs the exported image_qwen_image_2_1_t2i workflow (Qwen-Image-2.1, 7B
+single-stream DiT + Qwen3-VL 8B int8 encoder) against a locally running
+ComfyUI server via its HTTP API. No API key is required. The older Z-Image
+Turbo template (zit_basic_api.json) is kept and still selectable via
+COMFY_WORKFLOW.
 
 Configuration keys:
   COMFY_BASE_URL       (optional; default http://127.0.0.1:8188)
   COMFY_WORKFLOW       (optional; path to an API-format workflow JSON.
-                        Default: <skill>/templates/comfyui/zit_basic_api.json)
-  COMFY_NEGATIVE_PROMPT (optional; overrides the template's negative prompt)
+                        Default: <skill>/templates/comfyui/
+                        qwen_image_2_1_t2i_api.json)
+  COMFY_NEGATIVE_PROMPT (optional; overrides the template's negative prompt.
+                        Ignored while cfg stays at 1 — the Qwen-Image-2.1
+                        official path.)
   COMFY_FILENAME_PREFIX (optional; SaveImage prefix, default "ppt_master")
   COMFY_TIMEOUT        (optional; seconds to wait per image, default 600)
 
@@ -25,19 +31,21 @@ Auto-start keys (launch the local ComfyUI when 127.0.0.1:8188 is down):
                         placeholder, overrides COMFY_ROOT autodetection)
   COMFY_START_TIMEOUT  (optional; seconds to wait for server boot, default 300)
 
-Sampler overrides (Z-Image Turbo recommended: steps 8 / cfg 1 /
+Sampler overrides (Qwen-Image-2.1 official path: steps 25 / cfg 1 /
+euler / simple; Z-Image Turbo template defaults were steps 8 / cfg 1 /
 res_multistep / simple / shift 3):
   COMFY_STEPS          (optional; KSampler steps)
   COMFY_CFG            (optional; KSampler cfg)
-  COMFY_SAMPLER        (optional; sampler_name, e.g. res_multistep)
+  COMFY_SAMPLER        (optional; sampler_name, e.g. euler)
   COMFY_SCHEDULER      (optional; scheduler, e.g. simple)
-  COMFY_SHIFT          (optional; ModelSamplingAuraFlow shift)
+  COMFY_SHIFT          (optional; ModelSamplingAuraFlow shift, Z-Image only)
 
 The template's placeholder nodes are patched per request:
-  - the positive CLIPTextEncode node (text == "{{POSITIVE_PROMPT}}")
-    receives the prompt;
-  - EmptySD3LatentImage receives width/height computed from aspect_ratio
-    and image_size (nearest multiple of 8, same policy as ResolutionSelector);
+  - the positive CLIPTextEncode (text) or TextEncodeQwenImage21 (prompt)
+    node carrying "{{POSITIVE_PROMPT}}" receives the prompt;
+  - EmptySD3LatentImage / EmptyLatentImage receives width/height computed
+    from aspect_ratio and image_size (nearest multiple of 32, per the
+    Qwen-Image-2.1 usage note; also satisfies Z-Image's multiple-of-16);
   - KSampler gets a fresh random seed each call.
 
 All HTTP calls use a direct session (trust_env=False) so a system proxy
@@ -89,7 +97,7 @@ from image_backends.backend_common import (
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 DEFAULT_TEMPLATE = (
-    _SCRIPTS_DIR.parent / "templates" / "comfyui" / "zit_basic_api.json"
+    _SCRIPTS_DIR.parent / "templates" / "comfyui" / "qwen_image_2_1_t2i_api.json"
 )
 PROMPT_PLACEHOLDER = "{{POSITIVE_PROMPT}}"
 # image_size token -> target megapixels (mirrors the other backends' 512px/1K/2K/4K)
@@ -225,7 +233,7 @@ def _ensure_server_running(base_url: str) -> None:
 
 
 def _resolve_dimensions(aspect_ratio: str, image_size: str) -> tuple[int, int]:
-    """Compute width/height (multiple of 8) for the requested ratio and size."""
+    """Compute width/height (multiple of 32) for the requested ratio and size."""
     ratio = ASPECT_RATIO_MAP.get(aspect_ratio)
     if ratio is None:
         raise ValueError(
@@ -248,8 +256,8 @@ def _resolve_dimensions(aspect_ratio: str, image_size: str) -> tuple[int, int]:
     total = megapixels * 1_000_000
     width = math.sqrt(total * ratio)
     height = width / ratio
-    width = max(64, int(round(width / 8.0)) * 8)
-    height = max(64, int(round(height / 8.0)) * 8)
+    width = max(64, int(round(width / 32.0)) * 32)
+    height = max(64, int(round(height / 32.0)) * 32)
     return width, height
 
 
@@ -258,8 +266,8 @@ def _load_template(template_path: Path) -> dict:
         raise FileNotFoundError(
             f"ComfyUI workflow template not found: {template_path}\n"
             "Set COMFY_WORKFLOW to an API-format workflow JSON exported "
-            "from ComfyUI (the local 'zit基础' workflow is preinstalled at "
-            "templates/comfyui/zit_basic_api.json)."
+            "from ComfyUI (preinstalled: templates/comfyui/"
+            "qwen_image_2_1_t2i_api.json and zit_basic_api.json)."
         )
     graph = json.loads(template_path.read_text(encoding="utf-8"))
     if not isinstance(graph, dict) or not graph:
@@ -282,38 +290,50 @@ def _patch_graph(
     """Return a per-run copy of the template with prompt/size/seed injected."""
     graph = json.loads(json.dumps(graph))  # deep copy
 
-    positive_nodes = [
+    # Positive-prompt carrier: a CLIPTextEncode whose text (Z-Image style
+    # templates) or a TextEncodeQwenImage21 whose prompt (Qwen-Image-2.1,
+    # which encodes positive+negative in one node) equals the placeholder.
+    clip_positives = [
         nid for nid, node in graph.items()
         if node.get("class_type") == "CLIPTextEncode"
         and node.get("inputs", {}).get("text") == PROMPT_PLACEHOLDER
     ]
-    if not positive_nodes:
-        # Fall back to a heuristic: the CLIPTextEncode whose text is shortest
-        # but non-empty is usually the positive; a long quality-word list is
-        # the negative. Require the placeholder instead of guessing.
+    qwen_positives = [
+        nid for nid, node in graph.items()
+        if node.get("class_type") == "TextEncodeQwenImage21"
+        and node.get("inputs", {}).get("prompt") == PROMPT_PLACEHOLDER
+    ]
+    if not clip_positives and not qwen_positives:
         raise ValueError(
             "Workflow template is missing the positive-prompt placeholder node "
-            f"(a CLIPTextEncode whose text input equals {PROMPT_PLACEHOLDER!r}). "
-            "Use the shipped templates/comfyui/zit_basic_api.json or add the "
-            "placeholder manually."
+            f"(a CLIPTextEncode text or TextEncodeQwenImage21 prompt equal to "
+            f"{PROMPT_PLACEHOLDER!r}). Use a shipped template under "
+            "templates/comfyui/ or add the placeholder manually."
         )
-    graph[positive_nodes[0]]["inputs"]["text"] = prompt
+    for nid in clip_positives + qwen_positives:
+        node = graph[nid]
+        if node.get("class_type") == "CLIPTextEncode":
+            node["inputs"]["text"] = prompt
+        else:
+            node["inputs"]["prompt"] = prompt
+            if negative_prompt:
+                node["inputs"]["negative_prompt"] = negative_prompt
 
     if negative_prompt:
         negatives = [
             nid for nid in _find_nodes(graph, "CLIPTextEncode")
-            if nid not in positive_nodes
+            if nid not in clip_positives
         ]
         for nid in negatives:
             graph[nid]["inputs"]["text"] = negative_prompt
 
-    for nid in _find_nodes(graph, "EmptySD3LatentImage"):
+    for nid in _find_nodes(graph, "EmptySD3LatentImage") + _find_nodes(graph, "EmptyLatentImage"):
         graph[nid]["inputs"]["width"] = width
         graph[nid]["inputs"]["height"] = height
         graph[nid]["inputs"]["batch_size"] = 1
 
-    # Optional sampler overrides (Z-Image Turbo defaults: steps 8, cfg 1,
-    # res_multistep, simple, shift 3).
+    # Optional sampler overrides (template ships Qwen-Image-2.1 defaults:
+    # steps 25, cfg 1, euler, simple; Z-Image Turbo: steps 8, res_multistep).
     _int_overrides = {
         "steps": os.environ.get("COMFY_STEPS", "").strip(),
     }
@@ -474,7 +494,7 @@ def generate(prompt: str,
              aspect_ratio: str = "1:1", image_size: str = "1K",
              output_dir: str = None, filename: str = None,
              model: str = None, max_retries: int = MAX_RETRIES) -> str:
-    """Generate an image on the local ComfyUI (zit基础 workflow), with retries."""
+    """Generate an image on the local ComfyUI (Qwen-Image-2.1 t2i), with retries."""
     if model:
         print(f"[comfyui] Ignoring --model '{model}': the model is fixed by "
               "the ComfyUI workflow template.")

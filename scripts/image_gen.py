@@ -20,7 +20,7 @@ Backend selection (`IMAGE_BACKEND` in `.env` or the current process environment)
   IMAGE_BACKEND=fal         -> fal.ai backend
   IMAGE_BACKEND=replicate   -> Replicate backend
   IMAGE_BACKEND=openrouter  -> OpenRouter backend
-  IMAGE_BACKEND=comfyui     -> Local ComfyUI backend ("zit基础" Z-Image Turbo workflow, no API key)
+  IMAGE_BACKEND=comfyui     -> Local ComfyUI backend (Qwen-Image-2.1 t2i workflow, no API key)
 
 Configuration source (process env wins, `.env` is the fallback layer):
   1. Current process environment variables
@@ -234,7 +234,7 @@ BACKEND_REGISTRY = {
     "comfyui": {
         "module": "backend_comfyui",
         "tier": "core",
-        "label": "Local ComfyUI (zit基础 / Z-Image Turbo)",
+        "label": "Local ComfyUI (Qwen-Image-2.1 / Z-Image Turbo)",
         "default_model": None,
         "model_hint": "fixed by the workflow template (COMFY_WORKFLOW)",
         "default_image_size": "1K",
