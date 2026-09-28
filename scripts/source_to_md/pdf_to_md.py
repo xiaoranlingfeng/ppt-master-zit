@@ -10,9 +10,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from collections import Counter
 
@@ -132,6 +134,10 @@ def get_heading_level(size: float, size_map: dict, text: str = "",
     if len(text) > 80:
         return 0
 
+    # Exclusion: a bullet-led line is a list item, whatever its glyph size
+    if text[:1] in _BULLET_GLYPHS:
+        return 0
+
     # Exclusion: complete sentences ending with punctuation
     sentence_endings = '.。!！?？'
     if text and text[-1] in sentence_endings:
@@ -184,12 +190,77 @@ def format_span_text(text: str, flags: int) -> str:
     return text
 
 
+# Bullet glyphs a PDF sets as their own span; ``·`` (U+00B7) is common in
+# fact sheets, and a stray control character often follows the glyph.
+_BULLET_GLYPHS = '•●○◦▪▸►·‧∙・'
+
+
+def is_bullet_glyph_span(text: str) -> bool:
+    """Return whether a span holds only a bullet glyph (plus spaces / control characters)."""
+    stripped = re.sub(r'[\s\x00-\x1f]+', '', text)
+    return len(stripped) == 1 and stripped in _BULLET_GLYPHS
+
+
+# Below this many extracted text characters per page the PDF has no usable
+# text layer; a scan renders as one image per page and nothing else.
+SCANNED_PDF_TEXT_CHARS_PER_PAGE = 40
+
+
+def scanned_pdf_warnings(markdown: str, page_count: int, image_count: int) -> list[str]:
+    """Return a warning when the Markdown holds page images but almost no text.
+
+    ``[Done] Success`` with an empty Markdown body is worse than a failure:
+    a downstream reader takes the file as the converted source and concludes
+    the document has no usable content. The check counts text outside image
+    references and page comments against the page count.
+    """
+    if page_count <= 0:
+        return []
+    text_lines = [
+        line for line in markdown.splitlines()
+        if line.strip() and not line.lstrip().startswith(("![", "<!--"))
+    ]
+    text_chars = sum(len(line.strip()) for line in text_lines)
+    if text_chars >= SCANNED_PDF_TEXT_CHARS_PER_PAGE * page_count:
+        return []
+    if image_count < max(1, page_count // 2):
+        return []
+    return [
+        f"scanned PDF: {text_chars} text characters over {page_count} pages, "
+        f"{image_count} page images; no text layer was extracted, so the "
+        "clauses exist only inside the images (OCR or a text-layer copy is needed)"
+    ]
+
+
+# Two alef forms before a lam ("اإلحصاءات" for "الإحصاءات") is a lam-alef
+# ligature decomposed in the wrong order; well-formed Arabic practically
+# never has it. A run of tatweel marks where glyphs were dropped.
+_BROKEN_LAM_ALEF_RE = re.compile("[\u0627\u0623\u0625\u0622][\u0627\u0623\u0625\u0622]\u0644")
+
+
+def arabic_text_layer_warnings(markdown: str) -> list[str]:
+    """Warn when an Arabic text layer came out in visual order or lost glyphs."""
+    arabic = len(re.findall("[\u0600-\u06ff]", markdown))
+    if arabic < 200:
+        return []
+    broken = len(_BROKEN_LAM_ALEF_RE.findall(markdown))
+    tatweel = markdown.count("\u0640")
+    if broken < 5 and tatweel < arabic // 20:
+        return []
+    return [
+        f"Arabic text layer looks damaged: {broken} reversed lam-alef "
+        f"sequences and {tatweel} tatweel marks in {arabic} Arabic letters; "
+        "words, table cells, and numbers may be out of order or missing "
+        "letters, so check every figure against the PDF itself"
+    ]
+
+
 def detect_list_item(text: str) -> tuple:
     """Detect if the text is a list item. Returns (is_list, list_type, content)."""
     text = text.strip()
 
     ul_patterns = [
-        (r'^[•●○◦▪▸►]\s*', '-'),
+        (rf'^[{_BULLET_GLYPHS}][\s\x00-\x1f]*', '-'),
         (r'^[-–—]\s+', '-'),
         (r'^\*\s+', '-'),
     ]
@@ -199,8 +270,11 @@ def detect_list_item(text: str) -> tuple:
             return (True, 'ul', marker + ' ' + text[match.end():])
 
     # ``83.2%`` at the start of a line is a decimal, not item 83: after a
-    # dot the marker must not be followed by another digit.
-    ol_pattern = r'^(\d+)(?:[、)]|\.(?!\d))\s*'
+    # dot the marker must not be followed by another digit. ``1. 1 职业名称``
+    # (a clause number set with a space, as Chinese standards do) is a
+    # heading path, not item 1 with the text "1 职业名称": a short digit group
+    # right after the marker, followed by a space or CJK, keeps the line as is.
+    ol_pattern = r'^(\d+)(?:[、)]|\.(?!\d)(?!\s*\d{1,2}(?:\.\s*\d+)*[\s\u4e00-\u9fff]))\s*'
     match = re.match(ol_pattern, text)
     if match:
         num = match.group(1)
@@ -284,6 +358,27 @@ def detect_headers_footers(doc: fitz.Document, threshold_ratio: float = 0.6) -> 
     return noise_texts
 
 
+def _is_hangul(char: str) -> bool:
+    return "\uac00" <= char <= "\ud7a3" or "\u1100" <= char <= "\u11ff" or "\u3130" <= char <= "\u318f"
+
+
+def join_wrapped_text(head: str, tail: str) -> str:
+    """Join two wrapped PDF lines.
+
+    Chinese and Japanese wrap between characters, so a break between wide
+    characters takes no space; Korean spaces its words and wraps at them, so
+    a break touching Hangul keeps one.
+    """
+    if (
+        head and tail
+        and unicodedata.east_asian_width(head[-1]) in {"W", "F"}
+        and unicodedata.east_asian_width(tail[0]) in {"W", "F"}
+        and not (_is_hangul(head[-1]) or _is_hangul(tail[0]))
+    ):
+        return head + tail
+    return f"{head} {tail}"
+
+
 def merge_adjacent_headings(elements: list) -> list:
     """
     Merge adjacent same-level short headings.
@@ -332,7 +427,7 @@ def merge_adjacent_headings(elements: list) -> list:
                 break
 
             # Merge
-            title_text += " " + next_text
+            title_text = join_wrapped_text(title_text, next_text)
             j += 1
 
         # Create merged element
@@ -1039,6 +1134,118 @@ def _add_table_candidate(
     _append_table_markdown_candidate(candidates, bbox, markdown, method)
 
 
+ORPHAN_CELL_MAX_CHARS = 24
+ORPHAN_COLUMN_GAP = 12.0
+ORPHAN_ROW_COVERAGE = 0.6
+
+
+def _cluster_orphan_columns(cells: list[tuple[fitz.Rect, str, int]]) -> list[list[int]]:
+    """Group orphan text lines into columns by overlapping x-extents."""
+    ordered = sorted(range(len(cells)), key=lambda idx: cells[idx][0].x0)
+    columns: list[list[int]] = []
+    column_x1 = 0.0
+    for idx in ordered:
+        rect = cells[idx][0]
+        if columns and rect.x0 <= column_x1 + ORPHAN_COLUMN_GAP:
+            columns[-1].append(idx)
+            column_x1 = max(column_x1, rect.x1)
+        else:
+            columns.append([idx])
+            column_x1 = rect.x1
+    return columns
+
+
+def _orphan_side_columns(
+    cells: list[tuple[fitz.Rect, str, int]],
+    row_count: int,
+) -> list[list[str]] | None:
+    """Return per-row cell text for one side of a ruled table, or None."""
+    if not cells:
+        return None
+    covered_rows = {row_index for _rect, _text, row_index in cells}
+    if len(covered_rows) < max(2, math.ceil(row_count * ORPHAN_ROW_COVERAGE)):
+        return None
+    if any(len(text) > ORPHAN_CELL_MAX_CHARS for _rect, text, _row in cells):
+        return None
+
+    columns = _cluster_orphan_columns(cells)
+    table: list[list[str]] = [["" for _ in columns] for _ in range(row_count)]
+    for col_index, members in enumerate(columns):
+        for idx in sorted(members, key=lambda item: cells[item][0].x0):
+            rect, text, row_index = cells[idx]
+            current = table[row_index][col_index]
+            table[row_index][col_index] = f"{current} {text}".strip() if current else text
+    return table
+
+
+def _extend_ruled_table(
+    page: fitz.Page,
+    tab: object,
+    lines: list[tuple[fitz.Rect, str]],
+) -> tuple[fitz.Rect, str] | None:
+    """Re-attach columns that sit outside a partially ruled table's borders.
+
+    Statistical bulletins often rule only the middle columns; PyMuPDF then
+    returns a narrow table and the label and change columns fall out as loose
+    text. Text lines that share a row band with the table but lie fully to its
+    left or right are clustered into extra columns and prepended/appended.
+    """
+    try:
+        raw_rows = tab.extract() or []
+        row_rects = [fitz.Rect(row.bbox) for row in tab.rows]
+    except Exception:
+        return None
+    if len(raw_rows) < 2 or len(row_rects) != len(raw_rows):
+        return None
+
+    table_rect = fitz.Rect(tab.bbox)
+    left: list[tuple[fitz.Rect, str, int]] = []
+    right: list[tuple[fitz.Rect, str, int]] = []
+    for rect, text in lines:
+        if rect.y1 < table_rect.y0 - 2 or rect.y0 > table_rect.y1 + 2:
+            continue
+        center_y = (rect.y0 + rect.y1) / 2
+        row_index = next(
+            (
+                idx for idx, row_rect in enumerate(row_rects)
+                if row_rect.y0 - 2 <= center_y <= row_rect.y1 + 2
+            ),
+            None,
+        )
+        if row_index is None:
+            continue
+        if rect.x1 <= table_rect.x0 + 1:
+            left.append((rect, text, row_index))
+        elif rect.x0 >= table_rect.x1 - 1:
+            right.append((rect, text, row_index))
+        elif not (table_rect.x0 <= rect.x0 and rect.x1 <= table_rect.x1):
+            return None
+
+    left_cols = _orphan_side_columns(left, len(raw_rows))
+    right_cols = _orphan_side_columns(right, len(raw_rows))
+    if left_cols is None and right_cols is None:
+        return None
+
+    rows: list[list[object]] = []
+    for idx, row in enumerate(raw_rows):
+        merged: list[object] = []
+        if left_cols is not None:
+            merged.extend(left_cols[idx])
+        merged.extend(row)
+        if right_cols is not None:
+            merged.extend(right_cols[idx])
+        rows.append(merged)
+
+    markdown = _rows_to_markdown(_clean_table_rows(rows))
+    if not _is_valid_table_markdown(markdown):
+        return None
+
+    bbox = fitz.Rect(table_rect)
+    for rect, _text, _row in (left if left_cols is not None else []) + (right if right_cols is not None else []):
+        bbox |= rect
+    return bbox, markdown
+
+
 def _merge_word_runs(words: list[tuple]) -> list[dict[str, object]]:
     """Group PyMuPDF words into row-level text runs."""
     rows: list[list[tuple]] = []
@@ -1155,13 +1362,18 @@ def find_page_tables(
 ) -> tuple[list[dict[str, object]], bool]:
     """Find line-detected tables plus caption-guided text tables on one page."""
     candidates: list[dict[str, object]] = []
+    lines = _extract_text_lines(page)
     try:
         for tab in page.find_tables():
-            _add_table_candidate(candidates, tab, "lines")
+            extended = _extend_ruled_table(page, tab, lines)
+            if extended is None:
+                _add_table_candidate(candidates, tab, "lines")
+                continue
+            bbox, markdown = extended
+            _append_table_markdown_candidate(candidates, bbox, markdown, "lines+text")
     except Exception:
         pass
 
-    lines = _extract_text_lines(page)
     for rect, text in lines:
         if not _is_table_caption(text):
             continue
@@ -1474,6 +1686,12 @@ def extract_pdf_to_markdown(
                         span_size = span["size"]
                         span_flags = span["flags"]
 
+                        # A bullet glyph set in its own larger span must not
+                        # promote the line to a heading; it is a list marker.
+                        if is_bullet_glyph_span(span_text):
+                            formatted_spans.append(span_text)
+                            continue
+
                         line_size = max(line_size, span_size)
                         line_flags |= span_flags
                         span_count += 1
@@ -1503,6 +1721,8 @@ def extract_pdf_to_markdown(
                     heading_level = get_heading_level(line_size, size_map, line_text, line_flags)
 
                     is_list, list_type, list_content = detect_list_item(line_text)
+                    if is_list and not list_content.split(' ', 1)[-1].strip():
+                        continue
 
                     if heading_level > 0:
                         prefix = '#' * heading_level + ' '
@@ -1553,7 +1773,7 @@ def extract_pdf_to_markdown(
                         break
                     if not should_merge_lines({"content": merged_content, "is_heading": False, "is_list": False}, next_el):
                         break
-                    merged_content += " " + next_el["content"]
+                    merged_content = join_wrapped_text(merged_content, next_el["content"])
                     j += 1
                 merged_elements.append({
                     "type": 0,
@@ -1724,6 +1944,7 @@ def extract_pdf_to_markdown(
         if prev_was_code:
             flush_code_block()
 
+    page_count = len(doc)
     doc.close()
 
     markdown_content = merge_markdown_continuation_tables(markdown_content)
@@ -1740,12 +1961,17 @@ def extract_pdf_to_markdown(
                 json.dumps(image_manifest, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
+        warnings = scanned_pdf_warnings(markdown_content, page_count, img_count)
+        warnings += arabic_text_layer_warnings(markdown_content)
+        for warning in warnings:
+            print(f"[WARN] {warning}")
         profile_path = write_conversion_profile_best_effort(
             input_path=pdf_path,
             markdown_path=output_path,
             converter="pdf_to_md.py",
             conversion_type="pdf",
             asset_dir=img_dir,
+            warnings=warnings,
         )
         print(f"[OK] Saved Markdown to: {output_path}")
         if profile_path:

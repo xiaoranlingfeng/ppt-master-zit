@@ -75,6 +75,11 @@ _KEY_DRIFT_MARGIN = 4
 _KEY_PURITY_OPAQUE_RATIO = 0.6
 # At most this many trim pixels on a touched edge count as isolated drift.
 _EDGE_DRIFT_MAX_PIXELS = 8
+# Semi-transparent coverage nominates a haze candidate; only a failed key-only
+# margin can distinguish off-key ground from legitimate shadows and glows.
+_HAZE_ALPHA_LOW = 20
+_HAZE_ALPHA_HIGH = 150
+_HAZE_MAX_SHARE = 0.15
 # Corner sample inset (px) and minimum cell fill for the backing-panel notice.
 _PANEL_CORNER_INSET = 2
 _PANEL_MIN_FILL = 0.75
@@ -94,6 +99,20 @@ def parse_grid(spec: str) -> tuple[int, int]:
     if rows < 1 or cols < 1:
         raise ValueError(f"--grid rows and cols must be >= 1, got {rows}x{cols}")
     return rows, cols
+
+
+def parse_inset(spec: str) -> tuple[float, float]:
+    """Parse `--inset` as one fraction or `H,V`; both must lie in [0, 0.5)."""
+    parts = [part.strip() for part in str(spec).split(",")]
+    if len(parts) not in (1, 2) or not all(parts):
+        raise ValueError("--inset must be one fraction or H,V")
+    try:
+        values = [float(part) for part in parts]
+    except ValueError as exc:
+        raise ValueError("--inset must be one fraction or H,V") from exc
+    if not all(0.0 <= value < 0.5 for value in values):
+        raise ValueError("--inset must be in [0, 0.5)")
+    return (values[0], values[-1])
 
 
 def parse_hex(value: str) -> tuple[int, int, int]:
@@ -195,7 +214,10 @@ def _sample_bg(cell: Image.Image, tolerance: int) -> tuple[int, int, int]:
 
 def _sample_sheet_border(
     sheet: Image.Image,
-) -> tuple[tuple[int, int, int], int]:
+    *,
+    border_ratio: float = _SHEET_DIAGNOSTIC_BORDER_RATIO,
+    key: Optional[tuple[int, int, int]] = None,
+) -> tuple[tuple[int, int, int], int, int]:
     """Return the dominant RGB cluster, its spread, and the ring's farthest pixel.
 
     The spread describes the key field itself; the outlier distance is what a
@@ -204,8 +226,8 @@ def _sample_sheet_border(
     """
     rgb = sheet.convert("RGB")
     width, height = rgb.size
-    border_x = max(1, round(width * _SHEET_DIAGNOSTIC_BORDER_RATIO))
-    border_y = max(1, round(height * _SHEET_DIAGNOSTIC_BORDER_RATIO))
+    border_x = max(1, round(width * border_ratio))
+    border_y = max(1, round(height * border_ratio))
     px = rgb.load()
     pixels: list[tuple[int, int, int]] = []
 
@@ -242,8 +264,9 @@ def _sample_sheet_border(
         - min(pixel[index] for pixel in dominant_pixels)
         for index in range(3)
     ]
+    measured_key = dominant if key is None else key
     outlier = max(
-        max(abs(pixel[index] - dominant[index]) for index in range(3))
+        max(abs(pixel[index] - measured_key[index]) for index in range(3))
         for pixel in pixels
     )
     return dominant, max(channel_spreads), outlier  # type: ignore[return-value]
@@ -531,6 +554,50 @@ def _keying_findings(
     return findings
 
 
+def _haze_finding(
+    label: str,
+    alpha_mask: Image.Image,
+    bbox: tuple[int, int, int, int],
+    bg: tuple[int, int, int],
+    *,
+    cell: Image.Image,
+    tolerance: int,
+) -> Optional[str]:
+    """Report semi-transparent haze only when the key-only margins are off-key.
+
+    Soft-alpha recovery assumes the key field lies at the stated key; when the
+    real ground sits farther than the tolerance, the whole field comes back as
+    faint half-foreground that reads as a glowing rectangle on a dark slide.
+    A shadow or glow can fill most of the trimmed box. Check all four margins
+    at the sheet contract's 10% width before diagnosing the field itself.
+    """
+    box = alpha_mask.crop(bbox)
+    total = box.width * box.height
+    if total == 0:
+        return None
+    histogram = box.histogram()
+    hazy = sum(histogram[_HAZE_ALPHA_LOW:_HAZE_ALPHA_HIGH + 1])
+    share = hazy / total
+    if share <= _HAZE_MAX_SHARE:
+        return None
+    dominant, spread, distance = _sample_sheet_border(
+        cell, border_ratio=0.10, key=bg,
+    )
+    dominant_distance = max(abs(dominant[index] - bg[index]) for index in range(3))
+    if max(dominant_distance, spread, distance) <= tolerance:
+        return None
+    hex_bg = "#{:02X}{:02X}{:02X}".format(*bg)
+    measured_bg = "#{:02X}{:02X}{:02X}".format(*dominant)
+    return (
+        f"{label}: {share:.0%} of the trimmed element box is semi-transparent "
+        f"(alpha {_HAZE_ALPHA_LOW}-{_HAZE_ALPHA_HIGH}) and its four 10% key-only "
+        f"margins differ from {hex_bg} (dominant {measured_bg}; key spread "
+        f"{spread}; farthest pixel {distance} from key): the ground or an effect "
+        "occupies the key-only margin; regenerate with clear margins or rerun "
+        "with --bg set to the measured ground colour when it is flat"
+    )
+
+
 def _backing_panel_notice(
     label: str,
     alpha_mask: Image.Image,
@@ -607,18 +674,32 @@ def _log_keying_findings(
     *,
     sheet_border: tuple[tuple[int, int, int], int, int] | None = None,
     tolerance: int,
+    notices: list[str] | None = None,
 ) -> None:
     """Report incomplete flat-background keying."""
     _log("\n[WARN] Alpha extraction is incomplete — the key field or cell")
     _log("       isolation failed:")
     for finding in findings:
         _log(f"       - {finding}")
+    # A field recovered as haze is an off-key ground, not a panel: keep the
+    # measured-border rerun advice for it instead of the panel verdict.
+    hazy = any("semi-transparent" in finding for finding in findings)
+    panel_notices = [] if hazy else [n for n in (notices or []) if "backing panel" in n]
+    for notice in panel_notices:
+        _log(f"       - {notice}")
+    if panel_notices:
+        _log("       Cells painted as panels or cards keep their own ground "
+             "inside the key gutters: no --bg/--tolerance rerun on the outer "
+             "key can remove them. Regenerate with each element alone on the "
+             "key, or key each cell on its measured inner ground.")
+        return
     _log("       Fix: regenerate with one genuinely flat ground and keep every "
          "element/effect")
     _log("       inside its cell with a clear key-only gutter, or rerun with an "
          "explicit")
     _log("       --bg <hex> and a larger --tolerance; use --inset when a drawn "
-         "outer gutter is isolated from every element.")
+         "outer gutter is isolated from every element, or when the model drew "
+         "grid lines between cells (--inset 0.02, or H,V for wide cells).")
     if sheet_border is not None:
         dominant, drift, outlier = sheet_border
         hex_bg = "#{:02X}{:02X}{:02X}".format(*dominant)
@@ -673,12 +754,13 @@ def slice_sheet(
     *,
     names: Optional[list[str]] = None,
     prefix: Optional[str] = None,
-    inset: float = 0.0,
+    inset: float | tuple[float, float] = 0.0,
     trim: bool = False,
     alpha: bool = False,
     strict_alpha: bool = False,
     bg: Optional[tuple[int, int, int]] = None,
     tolerance: int = 18,
+    _auto_retry: bool = True,
 ) -> list[Path]:
     """Slice `sheet_path` into rows*cols element PNGs under `output_dir`.
 
@@ -687,6 +769,7 @@ def slice_sheet(
     automated run never silently drops cells. Each name must be a bare filename.
     """
     total_cells = rows * cols
+    inset_x, inset_y = inset if isinstance(inset, tuple) else (inset, inset)
     if strict_alpha and not alpha:
         raise ValueError("strict_alpha requires alpha=True")
     if names is not None and len(names) != total_cells:
@@ -730,9 +813,9 @@ def slice_sheet(
             # Integer cell box via per-index rounding to avoid drift.
             x0, x1 = round(c * sw / cols), round((c + 1) * sw / cols)
             y0, y1 = round(r * sh / rows), round((r + 1) * sh / rows)
-            if inset > 0:
-                dx = round((x1 - x0) * inset)
-                dy = round((y1 - y0) * inset)
+            if inset_x > 0 or inset_y > 0:
+                dx = round((x1 - x0) * inset_x)
+                dy = round((y1 - y0) * inset_y)
                 x0, x1, y0, y1 = x0 + dx, x1 - dx, y0 + dy, y1 - dy
             cell = sheet.crop((x0, y0, x1, y1))
 
@@ -753,6 +836,13 @@ def slice_sheet(
                     trim=trim, alpha=alpha, trim_mask=trim_mask, diff=diff,
                     notices=notices,
                 ))
+                if strict_alpha:
+                    haze = _haze_finding(
+                        f"cell ({r},{c})", alpha_mask, bbox, cell_bg,
+                        cell=cell, tolerance=tolerance,
+                    )
+                    if haze:
+                        findings.append(haze)
 
             if trim and trim_mask is not None and alpha_mask is not None and bbox is not None:
                 cell = cell.crop(bbox)
@@ -776,11 +866,37 @@ def slice_sheet(
             idx += 1
 
     if findings:
+        # When every finding is measured key noise or drift (never content on
+        # an edge), the tool already knows the tolerance that clears it: apply
+        # it once instead of asking for the same command again.
+        suggested = [
+            int(match.group(1))
+            for finding in findings
+            for match in [re.search(r"rerun with --tolerance (\d+)", finding)]
+            if match is not None
+        ]
+        if (
+            strict_alpha
+            and _auto_retry
+            and len(suggested) == len(findings)
+        ):
+            retry_tolerance = max(suggested)
+            _log(
+                f"[WARN] strict alpha: all {len(findings)} finding(s) are key noise; "
+                f"auto-retrying once with --tolerance {retry_tolerance} (measured)"
+            )
+            return slice_sheet(
+                sheet_path, rows, cols, output_dir,
+                names=names, prefix=prefix, inset=inset, trim=trim, alpha=alpha,
+                strict_alpha=strict_alpha, bg=bg, tolerance=retry_tolerance,
+                _auto_retry=False,
+            )
         sheet_border = _sample_sheet_border(sheet) if strict_alpha else None
         _log_keying_findings(
             findings,
             sheet_border=sheet_border,
             tolerance=tolerance,
+            notices=notices,
         )
         if strict_alpha:
             raise ValueError(
@@ -830,8 +946,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filename prefix when --names is absent (default: '<sheet-stem>_')",
     )
     parser.add_argument(
-        "--inset", type=float, default=0.0,
-        help="Trim each cell inward by this fraction on every side (0-0.49) to drop gutters",
+        "--inset", type=str, default="0",
+        help=(
+            "Trim each cell inward by this fraction (0-0.49) to drop gutters: "
+            "one value for every side, or H,V (e.g. 0.01,0.03) when wide cells "
+            "only need the horizontal grid line trimmed"
+        ),
     )
     parser.add_argument(
         "--trim", action="store_true",
@@ -876,8 +996,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
 
-    if not 0.0 <= args.inset < 0.5:
-        print("[ERROR] --inset must be in [0, 0.5)", file=sys.stderr)
+    try:
+        inset = parse_inset(args.inset)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
     if not 0 <= args.tolerance <= 255:
         print("[ERROR] --tolerance must be in [0, 255]", file=sys.stderr)
@@ -892,7 +1014,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         written = slice_sheet(
             sheet_path, rows, cols, output_dir,
-            names=names, prefix=args.prefix, inset=args.inset,
+            names=names, prefix=args.prefix, inset=inset,
             trim=args.trim, alpha=args.alpha, strict_alpha=args.strict_alpha,
             bg=bg, tolerance=args.tolerance,
         )

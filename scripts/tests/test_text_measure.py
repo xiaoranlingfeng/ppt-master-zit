@@ -45,8 +45,45 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
+
+
+class CalibrateRoleWeightTests(unittest.TestCase):
+    def test_role_argument_accepts_a_bold_suffix(self) -> None:
+        from text_measure import _role_argument
+
+        self.assertEqual(_role_argument('title:Arial:36'), ('title', 'Arial', 36.0, 'normal'))
+        self.assertEqual(_role_argument('title:Arial:36:bold'), ('title', 'Arial', 36.0, 'bold'))
+
+    def test_bold_role_calibrates_wider(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from text_measure import _calibration_payload
+
+        with tempfile.TemporaryDirectory() as tmp:
+            normal = _calibration_payload(
+                [('title', 'Arial', 36.0)], project_path=Path(tmp),
+                source='--role', include_outline=False,
+            )['roles']['title']
+            bold = _calibration_payload(
+                [('title', 'Arial', 36.0)], project_path=Path(tmp),
+                source='--role', include_outline=False, weights={'title': 'bold'},
+            )['roles']['title']
+        self.assertEqual(bold['weight'], 'bold')
+        self.assertLess(bold['latin_chars_per_100px'], normal['latin_chars_per_100px'])
+
+
+class WrapUnitTests(unittest.TestCase):
+    def test_percent_sign_stays_with_its_number(self) -> None:
+        from text_measure import wrap_text
+
+        lines, _widths, _oversized = wrap_text(
+            'xxxx yyyy 71% of the cohort', size=26, max_width=175, family='Arial',
+        )
+        self.assertEqual(lines, ['xxxx yyyy', '71% of the', 'cohort'])
 
 
 class TextMeasureTests(unittest.TestCase):
@@ -88,7 +125,7 @@ class TextMeasureTests(unittest.TestCase):
         text = 'The dissemination layer covers the poster you stand next to at a conference session'
         crude = sum(estimate_text_cluster_widths(text, 16))
         self.assertAlmostEqual(crude, 661.6)
-        for family in ('Segoe UI', 'Unlisted Sans', 'Segoe UI, Arial'):
+        for family in ('Aptos', 'Unlisted Sans', 'Aptos, Arial'):
             with self.subTest(family=family):
                 self.assertEqual(
                     measure_text(text, size=16, family=family, include_headroom=False),
@@ -165,7 +202,7 @@ class TextMeasureTests(unittest.TestCase):
                 )
 
     def test_extended_clusters_keep_existing_widths_and_tracking(self) -> None:
-        text = 'e\u0301👩🏽‍💻🇨🇳1️⃣Ａｱ'
+        text = '👩🏽‍💻🇨🇳1️⃣Ａｱ'
         for weight in ('400', 'bold'):
             with self.subTest(weight=weight):
                 crude = estimate_text_cluster_widths(text, 20, weight)
@@ -178,6 +215,13 @@ class TextMeasureTests(unittest.TestCase):
                                  letter_spacing=2, include_headroom=False),
                     sum(crude) + 2 * (len(crude) - 1),
                 )
+
+    def test_accented_letters_outside_the_table_advance_like_their_base(self) -> None:
+        for family in ('Arial', 'Cambria'):
+            with self.subTest(family=family):
+                accented = estimate_text_cluster_widths('ỔỊe\u0301ệ', 20, font_family=family)
+                plain = estimate_text_cluster_widths('OIee', 20, font_family=family)
+                self.assertEqual(accented, plain)
 
     def test_arial_black_keeps_wide_family_factor(self) -> None:
         crude = sum(estimate_text_cluster_widths('CAPS', 20, 'bold'))

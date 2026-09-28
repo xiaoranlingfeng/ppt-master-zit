@@ -61,8 +61,10 @@ Useful options:
   `--no-images`, and `--filter-images` map to the PDF image mode.
   `--no-images` (or `--images none`) also applies to web pages (images stay
   remote links, no `<stem>_files/`) and is a no-op on Markdown/text.
-- A `.md` / `.markdown` / `.txt` URL whose body is not HTML is saved verbatim
-  under a `Source:` header, named by the URL's filename stem.
+- A URL that serves a PDF / Office document (by Content-Type, body magic, or
+  suffix) is saved beside the Markdown and converted by that document's
+  backend; a `.md` / `.txt` URL whose body is not HTML is saved verbatim
+  under a `Source:` header, named by the URL stem.
 - Unknown backend-specific flags are passed through to each selected converter.
 - `-o/--output` selects one Markdown file for one input, or an output directory
   for multiple inputs / directory inputs.
@@ -119,7 +121,7 @@ PyMuPDF is licensed under AGPL-3.0, with a commercial license available from Art
 Hybrid converter: pure-Python for the common formats, pandoc fallback for the rest.
 
 Native path (no external binary required):
-- `.docx` — via `mammoth`; text-only tables are preserved as pipe Markdown, and OMML / Office Math equations (Word-native or MathType "Convert to Office Math") are rewritten to inline LaTeX. Classic MathType OLE objects carry no OMML and are kept only as their preview image.
+- `.docx` — via `mammoth`; text-only tables (with footnotes) and chart data become pipe Markdown, and OMML / Office Math equations (Word-native or MathType "Convert to Office Math") are rewritten to inline LaTeX. Classic MathType OLE objects carry no OMML and are kept only as their preview image.
 - `.html` / `.htm` — via `markdownify` + `beautifulsoup4`
 - `.epub` — via `ebooklib` + `markdownify`
 - `.ipynb` — via `nbconvert`
@@ -278,7 +280,7 @@ remains strict rather than silently treating the raster preview as the
 template's canonical asset.
 
 Supported `a:hlinkClick` on shape/picture `p:cNvPr` and text `a:rPr` becomes
-the shared SVG `<a href>` form for absolute external URIs and final-roster
+the shared SVG `<a href>` form for absolute external URIs and source-roster
 `#slide-N` jumps. A source shape that also has linked inner runs uses the
 importer-only `data-pptx-shape-hyperlink` transport to avoid nested SVG anchors.
 Unsupported click actions produce a diagnostic; strict import stops.
@@ -644,7 +646,6 @@ On success, the converter uses the shared best-effort sidecar contract for
 `<stem>.conversion_profile.json` beside the Markdown output.
 `--emit-result` is for wrapper scripts that need the actual saved Markdown path
 when the converter derives a title-based filename.
-
 
 ## Image Orientation Review
 

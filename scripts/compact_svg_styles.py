@@ -33,6 +33,7 @@ from typing import Optional
 from xml.etree import ElementTree as ET
 
 from console_encoding import configure_utf8_stdio
+from pptx_to_svg.preset_authoring import authored_preset_encoding
 from svg_to_pptx.drawingml.utils import INHERITABLE_ATTRS
 
 configure_utf8_stdio()
@@ -139,6 +140,18 @@ class _StyleDeclaration:
 
 def _local_name(name: object) -> str:
     return name.rsplit("}", 1)[-1] if isinstance(name, str) else ""
+
+
+def _is_preset_atom(element: ET.Element) -> bool:
+    """Return whether an element is a helper-owned authored preset group."""
+    return isinstance(element.tag, str) and authored_preset_encoding(element) is not None
+
+
+def _keeps_local_paint(element: ET.Element) -> bool:
+    """Preset atoms and icon references resolve paint from their own attributes."""
+    return _is_preset_atom(element) or (
+        _local_name(element.tag) == "use" and element.get("data-icon") is not None
+    )
 
 
 def is_canonical_presentation_value(
@@ -339,7 +352,10 @@ def _promote_common_group_defaults(
     stats: StyleCompactionStats,
 ) -> None:
     """Factor proven direct-child repetition into an existing SVG group."""
-    if _local_name(element.tag) in _DEFINITION_SUBTREES:
+    if (
+        _local_name(element.tag) in _DEFINITION_SUBTREES
+        or _is_preset_atom(element)
+    ):
         return
     for child in element:
         _promote_common_group_defaults(child, stats)
@@ -356,6 +372,10 @@ def _promote_common_group_defaults(
         }
     ]
     if len(children) < 2:
+        return
+    # Helper-owned preset atoms and icon references keep their paint local;
+    # both contracts reject paint that only arrives from an ancestor group.
+    if any(_keeps_local_paint(child) for child in children):
         return
 
     element_styles = _style_declarations(element.get("style"))
@@ -404,7 +424,10 @@ def _remove_redundant_inherited_styles(
     inherited: dict[str, str],
     stats: StyleCompactionStats,
 ) -> None:
-    if _local_name(element.tag) in _DEFINITION_SUBTREES:
+    if (
+        _local_name(element.tag) in _DEFINITION_SUBTREES
+        or _keeps_local_paint(element)
+    ):
         return
     declarations = _style_declarations(element.get("style"))
     if declarations is None:
@@ -499,9 +522,46 @@ def _compact_svg_bytes(
         encoding="utf-8",
         xml_declaration=original.lstrip().startswith(b"<?xml"),
     )
+    if b"<![CDATA[" in original:
+        payload = _restore_json_cdata(payload)
     if not payload.endswith(b"\n"):
         payload += b"\n"
     return payload, stats
+
+
+_JSON_METADATA_RE = re.compile(
+    rb'(<metadata\b[^>]*\btype="application/json"[^>]*>)(.*?)(</metadata>)',
+    re.DOTALL,
+)
+_XML_ENTITY_UNESCAPES = (
+    (b"&lt;", b"<"),
+    (b"&gt;", b">"),
+    (b"&quot;", b'"'),
+    (b"&apos;", b"'"),
+    (b"&amp;", b"&"),
+)
+
+
+def _restore_json_cdata(payload: bytes) -> bytes:
+    """Re-wrap serialized JSON metadata in CDATA.
+
+    ElementTree drops CDATA sections on parse and escapes ``<``/``&`` on
+    write; the native payload examples are authored as CDATA, so a compacted
+    file keeps that form for grep-style readers.
+    """
+
+    def _wrap(match: re.Match[bytes]) -> bytes:
+        body = match.group(2)
+        if body.lstrip().startswith(b"<![CDATA["):
+            return match.group(0)
+        text = body
+        for entity, literal in _XML_ENTITY_UNESCAPES:
+            text = text.replace(entity, literal)
+        if b"]]>" in text:
+            return match.group(0)
+        return match.group(1) + b"<![CDATA[" + text + b"]]>" + match.group(3)
+
+    return _JSON_METADATA_RE.sub(_wrap, payload)
 
 
 def _write_atomic(path: Path, payload: bytes) -> None:

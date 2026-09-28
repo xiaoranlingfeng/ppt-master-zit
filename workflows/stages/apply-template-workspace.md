@@ -8,7 +8,7 @@ description: Generate-PPTX runbook for validating and installing selected Brand,
 
 ## 1. Gate and Normalize Inputs
 
-🚧 **GATE**: Default Stage 1 confirmed a non-free selection, or Quick received exact roots directly from the user/current Create Template handoff — in Quick that input is the complete selection authority (no Confirm UI, no `template_options.json` / `template_selection.json` / `template_handoff.json`). Every selected input resolves to one current contract:
+🚧 **GATE**: Default Stage 1 confirmed a non-free selection, or Quick received exact roots directly from the user/current Create Template handoff — in Quick that input is the complete selection authority (no Confirm UI recommendations or selection receipt). Every selected input resolves to one current contract:
 
 | Input shape | Spec and SVG source | Asset source |
 |---|---|---|
@@ -44,7 +44,7 @@ Read [`templates/README.md`](../../templates/README.md), then only the README fo
 A Layout created with `mirror` stays eligible only when its source is brand-neutral and application-neutral; keep a branded or application-bearing source as a Deck or re-author it through `standard` / `fidelity`. Before mapping any workspace, run the shared package validator from its root — Brand/Style are roster-free, the active structure validates its roster, a shadowed Deck still validates its contract; any error blocks installation:
 
 ```bash
-python3 skills/ppt-master/scripts/svg_quality_checker.py "<workspace_root>/templates" --template-mode --canonical-authoring
+python3 ${SKILL_DIR}/scripts/svg_quality_checker.py "<workspace_root>/templates" --template-mode --canonical-authoring
 ```
 
 ## 3. Structured Preflight
@@ -71,7 +71,7 @@ Validate each normalized root once. The effective structural owner is Layout whe
 **Command**: the mapping, provenance line, asset copy, collision and duplicate-kind refusal, and completion receipt below are one run of the install tool (add `--dry-run` to review the mapping first; `--skip-validation` only when the §2 checker already ran on that root in this turn); [`template-tools.md`](../../scripts/docs/template-tools.md#apply_templatepy) owns its behavior:
 
 ```bash
-python3 skills/ppt-master/scripts/apply_template.py <project_path> --root <workspace_root> [--root <workspace_root> ...]
+python3 ${SKILL_DIR}/scripts/apply_template.py <project_path> --root <workspace_root> [--root <workspace_root> ...]
 ```
 
 **Atomic install preflight**: resolve every source and destination path; enumerate the union mapping across all roots and across `templates/`, `images/`, `icons/`, mapping each source file at most once; resolve Layout-over-Deck precedence before building the map so the shadowed roster never enters it; reject every destination collision and duplicate kind before writing; write the accepted mapping once — never recursive copy as an implicit conflict policy. An input equal to the target project is consumed in place; if a selected Layout supersedes its in-place Deck roster, stage the mapping and replace the roster atomically.
@@ -111,4 +111,4 @@ Each installed file keeps its own frontmatter `kind` and `<id>`; nothing is rela
 - [x] Every kind schema passed preflight; structured SVG checks ran only for Layout/Deck inputs
 - [x] Duplicate kinds and destination collisions were rejected before one atomic install; Layout-over-Deck precedence selected exactly one active roster
 - [x] `<project_path>/templates/` and portable sibling assets are complete and the only downstream template source
-- [ ] **Next**: Default completes the template-selection handoff and continues [`generate-pptx.md`](../generate-pptx.md) Step 4 Stage 2; Quick returns to [`quick-generate`](../profiles/quick-generate.md) §2
+- [ ] **Next**: Default continues [`generate-pptx.md`](../generate-pptx.md) Step 4 Stage 2 after the server verifies selection and installation; Quick returns to [`quick-generate`](../profiles/quick-generate.md) §2

@@ -14,11 +14,11 @@ Motion is several separate capabilities, not one dial; two of them are decided w
 | A continuous action — slide-in, flip, camera push-in, progressive reveal, camera pan | **Morph: author the action as two static pages**, then select Morph and add explicit pairs when identity must be deterministic; there is no keyframe timeline anywhere — the difference between two editable slides *is* the animation | **Page authoring (Step 6), then motion post-processing** — §2.1, §3.1 |
 | A static full-bleed page that should stop looking frozen | Slow `path_*` motion on a visually subordinate image or atmospheric layer | Post-processing; §4.1 |
 | Carousel, counting numerals, parallax depth, click-to-reveal flip card | Four recipes assembled from the mechanisms above; carousel and odometer need paired pages | §4.2 |
-| Kiosk or unattended playback | `--auto-advance <seconds>`, optionally with `-t none` | Export; §3 |
+| Unattended looping playback | `--auto-advance <seconds>`, optionally with `-t none`; add `--kiosk` when the show must loop and ignore clicks (signage, a touch guide navigated by its own buttons) | Export; §3 |
 | A transition or object animation needs an audible cue | Optional `transition.sound` or object `sound`, selected only after the visual solution is complete and synced from the global library; a narrated MP4 uses either the verified native-export mix or explicit slideshow capture, never both | Post-motion; §2.2 |
 | Nothing should move | `-t none` and per-element `none` | Export; §1 |
 
-**Hard rule — Morph geometry is an authoring decision; pairing is a later execution decision**: export cannot invent endpoint states. Author both consecutive pages while `svg_output/` is being built. For deterministic identity expose each endpoint as a compatible direct-root group and declare the pair in `animations.json` (§2.1); ids and geometry may differ. `-t morph` without pairs leaves matching to PowerPoint's heuristic.
+**Hard rule — Morph geometry is an authoring decision; pairing is a later execution decision**: export cannot invent endpoint states. Author both consecutive pages during the selected route's page authoring. For deterministic identity expose each endpoint as a compatible direct-root group and declare the pair in `animations.json` (§2.1); ids and geometry may differ. `-t morph` without pairs leaves matching to PowerPoint's heuristic.
 
 **Reference — not a constraint**: per-element animation stays off by default; auto-firing builds on every page are an unsolicited "AI deck" tell, and each capability earns its place per page.
 
@@ -107,7 +107,7 @@ When one semantic object continues across adjacent slides, the destination slide
 |---|---|
 | Owner | `morph` belongs to the destination; `morph.from` is the immediately preceding stem in export order |
 | Source of pairs | `scaffold` never guesses identity — add pairs from the motion plan after inspecting final direct-root ids |
-| Pair key | A stable identity whose `from`/`to` are unique direct-root `<g>` ids on the two slides, written without `!!` (export writes the Selection Pane name `!!<key>` on both); a root primitive with a static role marker is not pairable, and neither is a `Native-ready=yes` chart or table — `--native-charts-and-tables` turns it into a graphicFrame and the pair fails at export |
+| Pair key | A stable identity whose `from`/`to` are unique direct-root `<g>` ids on the two slides, written without `!!` (export writes the Selection Pane name `!!<key>` on both); a root primitive with a static role marker is not pairable, neither is a `Native-ready=yes` chart or table — `--native-charts-and-tables` turns it into a graphicFrame and the pair fails at export — nor a `data-pptx-placeholder` slot on a structured page, which export rewrites into a layout placeholder; pair a Slide-local group there |
 | Destination effect | A destination with pairs sets `effect: morph` explicitly (`morph_by` omitted or `object`; `word`/`character` rejected; a CLI override that changes the effect fails) |
 | Chains | A middle slide may continue an object into another Morph under the same key |
 | Uniqueness | One key never names two objects on a slide; one object never carries two keys; every `!!` key shared by adjacent Morph pages must be declared |
@@ -153,7 +153,7 @@ python3 skills/ppt-master/scripts/sound_sync.py <project_path> <namespace>/<soun
 ```bash
 python3 skills/ppt-master/scripts/svg_to_pptx.py <project> -t push --transition-duration 0.6
 python3 skills/ppt-master/scripts/svg_to_pptx.py <project> -t none
-python3 skills/ppt-master/scripts/svg_to_pptx.py <project> --auto-advance 5            # kiosk playback
+python3 skills/ppt-master/scripts/svg_to_pptx.py <project> --auto-advance 5            # unattended playback
 python3 skills/ppt-master/scripts/svg_to_pptx.py <project> -t none --auto-advance 5
 ```
 
@@ -163,7 +163,8 @@ python3 skills/ppt-master/scripts/svg_to_pptx.py <project> -t none --auto-advanc
 |---|---|
 | `-t/--transition` | Default `fade`; `none` keeps an explicit auto-advance |
 | `--transition-duration` | Default `0.4` |
-| `--auto-advance` | Seconds; click still advances |
+| `--auto-advance` | Seconds, longer than the page's animation total; click still advances |
+| `--kiosk` | Loop until Escape and ignore click/keyboard advance; only timings and hyperlinks move between slides |
 
 **Hard rule — no silent downgrade**: an unknown effect, unsupported option, or invalid duration fails export and is never replaced by `fade`. Carrier XML, MCE fallbacks, and read-back: [`pptx-transitions.md`](../scripts/docs/pptx-transitions.md).
 
@@ -234,7 +235,7 @@ Animations anchor on unique top-level `<g id>` content groups (`cover-title`, `c
 
 **Hard rule — existing groups are not custom-animation intent**: during the custom stage derive one group per logical motion unit from claims, comparisons, sequence, causality, and narration — splitting coarse wrappers and merging fragments without changing appearance, never to hit a count — and run `list-groups` only after that rewrite.
 
-**Chrome stays static by default**: a `data-pptx-layer` group is structural and never animates, and a full-canvas background rect becomes the slide background, which cannot animate either. A static role/placeholder marker or a chrome-name id (background, header/footer, decor, watermark, page number, nav, logo, rule) keeps a group out of automatic animation and the scaffold; a sidecar entry that names it animates it — a background field panning (§4.1), a cover band sliding in — judged per page, never by category. Wrap logical sections in `<g id>` ([`shared-standards-core.md`](./shared-standards-core.md) §4.3); a root with no top-level group falls back to a bounded primitive set ([`svg-pipeline.md`](../scripts/docs/svg-pipeline.md)).
+**Chrome stays static by default**: a `data-pptx-layer` group is structural and never animates, and a full-canvas background rect becomes the slide background, which cannot animate either. A static role/placeholder marker or a chrome-name id (background, header/footer, decor, watermark, page number, nav, logo, or a bare `rule` / decorative-line `hairline-rule`; a content group such as `commit-rule` is not chrome) keeps a group out of automatic animation and the scaffold; a sidecar entry that names it animates it — a background field panning (§4.1), a cover band sliding in — judged per page, never by category. Wrap logical sections in `<g id>` ([`shared-standards-core.md`](./shared-standards-core.md) §4.3); a root with no top-level group falls back to a bounded primitive set ([`svg-pipeline.md`](../scripts/docs/svg-pipeline.md)).
 
 ---
 

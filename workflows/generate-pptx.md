@@ -36,7 +36,7 @@ description: Default Generate PPTX authority for source intake, planning, SVG au
 | User provides | Action |
 |---|---|
 | PDF / DOCX / Office document / XLSX / XLSM / PPTX / EPUB / HTML / LaTeX / RST / web URL | `python3 ${SKILL_DIR}/scripts/source_to_md.py <file_or_URL_or_dir> [<file_or_URL_or_dir> ...]` |
-| CSV / TSV | Read directly as a plain-text table source |
+| CSV / TSV | Read directly as a plain-text table source; a wide public dataset (World Bank, OECD, Eurostat) — a converted workbook too — is first sliced to the needed rows and columns with a short Python snippet, never read whole; the same read-only snippet over the archived source may fill chart and table values, adding no figure the source lacks |
 | Markdown | Read directly |
 | Topic only | Run [`topic-research`](stages/topic-research.md) first and use its research pair as source; Step 2 imports the pair without expanding the facts JSON's URLs |
 
@@ -63,7 +63,7 @@ python3 ${SKILL_DIR}/scripts/project_manager.py import-sources <project_path> <s
 
 **Workflow log**: initialization creates `<project_path>/validation/workflow.log`; later project-scoped Python tools record their command envelopes there automatically (prefix `PPT_MASTER_PROJECT_PATH="<project_path>"` when a helper's arguments do not identify the project). Append one concise note with `python3 ${SKILL_DIR}/scripts/workflow_log.py <project_path> "<detail>"` only for a material handoff, rework reason, approved exception, or manual recovery with no owning command output. The log is cold audit evidence, never read during generation.
 
-**Import rules**: pass the source path once when Step 1 wrote Markdown beside it, both locations when `-o` wrote it elsewhere, and only the research pair when Topic Research ran (its facts JSON is imported as a file; no URL is fetched). Copy/move semantics, bitmap archiving, and the PPTX intake bundle it writes under `analysis/` (`<stem>.identity.json`, `<stem>.slide_library.json`, `source_profile.json`) are [`project.md`](../scripts/docs/project.md). Those artifacts are source facts and recommendation candidates, not replica constraints; Beautify stays single-deck.
+**Import rules**: pass the source path together with the Markdown Step 1 wrote beside it (a same-stem Markdown suppresses re-conversion and is imported with its sidecar and assets; the source alone is archived and converted again), both locations when `-o` wrote it elsewhere, and only the research pair when Topic Research ran (its facts JSON is imported as a file; no URL is fetched). Copy/move semantics, bitmap archiving, and the PPTX intake bundle it writes under `analysis/` (`<stem>.identity.json`, `<stem>.slide_library.json`, `source_profile.json`) are [`project.md`](../scripts/docs/project.md). Those artifacts are source facts and recommendation candidates, not replica constraints; Beautify stays single-deck.
 
 **✅ Checkpoint** — project created, `sources/` complete, converted materials ready. `import-sources` exits 0 when any input converts: read the printed `skipped` reasons and treat those inputs as absent. Proceed to Step 3.
 
@@ -71,7 +71,7 @@ python3 ${SKILL_DIR}/scripts/project_manager.py import-sources <project_path> <s
 
 ### Step 3: Template Candidate Preparation
 
-Internal preparation for every Default run — no page, question, receipt, selection, template read, or installation. Quick skips this Step.
+Internal preparation for every Default run — no page, question, receipt, selection, or installation; read only the frontmatter an exact root needs for kind and canvas. Quick skips this Step.
 
 Candidates follow [`routing.md`](./routing.md) §7: registered roots from the four indexes plus every exact root supplied for this run. Raw PPTX is source material, not a candidate — raw PPTX plus new content is [`edit-native-pptx`](./edit-native-pptx.md), and a reusable workspace comes from [`create-template`](./create-template.md).
 
@@ -79,20 +79,20 @@ Resolve the surface under [`confirm-surface.md`](../references/confirm-surface.m
 
 | Branch | Preparation |
 |---|---|
-| UI | Run `--reset-template-selection`, then write `<project_path>/confirm_ui/template_options.json` with `schema_version: 1`, `phase: "template"`, the UI `lang`, all supplied roots as absolute `explicit_workspace_roots` (empty array when none), and `default_mode` — `templates` for explicit template intent or any supplied root, otherwise `free_design`. Do not launch yet; the server reads the indexes itself. |
+| UI | Embed `template_options` in `recommendations.stage1.json`: `schema_version: 1`, `phase: "template"`, UI `lang`, all supplied roots as absolute `explicit_workspace_roots` (empty array when none), and `default_mode` — `templates` for explicit intent or supplied roots, otherwise `free_design`. Do not launch yet; the server reads indexes. |
 | Chat / delegated | Retain the same candidate boundary in context and create no UI artifact. |
 
 Stage 1 initializes from `default_mode` but the user may switch. Template mode requires at least one selection; exactly one supplied root may be preselected, several remain unselected.
 
-**✅ Checkpoint** — candidates ready; nothing selected, read, validated, or installed. Proceed to Step 4 without a user-visible stop.
+**✅ Checkpoint** — candidates ready; nothing selected, validated, or installed. Proceed to Step 4 without a user-visible stop.
 
 ---
 
 ### Step 4: Strategist Phase (MANDATORY in the default pipeline)
 
-🚧 **GATE**: Steps 1–3 complete; no template content in planning context; Stage 1 not started.
+🚧 **GATE**: Steps 1–3 complete; Stage 1 not started.
 
-**Hard rule — Stage 1 is template-independent**: author every Stage-1 recommendation from the user's request, source facts, conversation constraints, and project-initialization state only; candidate paths, index summaries, template specs/prototypes/assets, and template canvas are not evidence. Template inspection begins only after Stage 1 confirms both the communication contract and the template/free-design choice and any selection is installed.
+**Hard rule — a template never rewrites the goal**: audience, intent, outcome, core message, delivery context, and afterlife come from the user's request, source facts, conversation constraints, and project-initialization state; a candidate's existence, summary, or prototypes never bend them. Template facts already in context — a root handed off by Create Template in this conversation, an exact root's kind and canvas — may inform the recommended canvas and page range, and a canvas that differs from project initialization is a visible Stage-1 decision, never a silent Stage-2 override. Prototype-level planning begins only after Stage 1 confirms both the communication contract and the template/free-design choice and any selection is installed.
 
 Load the planning core in one batch, plus the structured facts already in `<project_path>/analysis/`:
 
@@ -129,7 +129,7 @@ This is a capability map, not a usage checklist; direction construction follows 
 
 **Only the user confirms**: the agent authors recommendations, operates the server, reads state, and applies a template. It never confirms on the user's behalf, automates submission, synthesizes a payload, or writes user result state; silence confirms nothing. Under explicit delegation the agent makes the Stage-1 decision, installs it, derives Stage 2, and presents one complete summary without fabricating UI receipts.
 
-**UI branch** — `template_options.json` (Step 3), `recommendations.stage1.json`, `template_handoff.json` (written only by `--complete-template-selection`), and `recommendations.stage2.json` are agent inputs; `template_selection.json` and `result.json` are user receipts. Only the active unconfirmed stage file may be overwritten, in place, never with a revision suffix or another stage's payload. Author Stage 1 without reading candidates, launch, post the [`confirm-surface.md`](../references/confirm-surface.md) handoff summary, then wait:
+**UI branch** — `recommendations.stage1.json` (with `template_options`) and `recommendations.stage2.json` are agent inputs; server-written `template_selection.json` and `result.json` are user receipts, and installer-written `template_install.json` proves installed content. Only the active unconfirmed stage file may be overwritten, in place, never with a revision suffix or another stage's payload. Author Stage 1 without opening candidate specs or prototypes, launch, post the [`confirm-surface.md`](../references/confirm-surface.md) handoff summary, then wait:
 
 ```bash
 python3 ${SKILL_DIR}/scripts/confirm_ui/server.py <project_path> --daemon
@@ -138,11 +138,8 @@ python3 ${SKILL_DIR}/scripts/confirm_ui/server.py <project_path> --wait-only --w
 
 **Hard rule — Stage 1 is intermediate**: exit `0` here means continue, not finish — no final reply, no idling. Read `result.json` and `template_selection.json` exactly once (a confirmed contract plus either `free_design` with no roots or `templates` with ≥1 server-resolved root), then in the same run:
 
-1. For `templates`, run [`apply-template-workspace.md`](./stages/apply-template-workspace.md) against every confirmed root (each installs as `templates/design_spec.<kind>.<id>.md` plus real `images/` and `icons/`); for `free_design` skip it. Then bind the state — agent-only, never hand-authored:
-   ```bash
-   python3 ${SKILL_DIR}/scripts/confirm_ui/server.py <project_path> --complete-template-selection
-   ```
-2. Only now inspect installed template state (apply `strategist-template.md` when active), load the planning-capability block, author the three solutions, freeze and read their exact bases, derive the production defaults, and create `recommendations.stage2.json` (`stage: "stage2"`) without changing Stage 1. Wait:
+1. For `templates`, run [`apply-template-workspace.md`](./stages/apply-template-workspace.md) against every confirmed root (each installs as `templates/design_spec.<kind>.<id>.md` plus real `images/` and `icons/`); for `free_design` skip it. The server verifies selection and the installer receipt directly before Stage 2.
+2. Only now inspect installed template state (apply `strategist-template.md` when active), load the planning-capability block, author the three solutions, freeze and read their exact bases, derive the production defaults, and create `recommendations.stage2.json` (`stage: "stage2"`, `selection_sha256` copied from the server-written selection) without changing Stage 1. Wait:
    ```bash
    python3 ${SKILL_DIR}/scripts/confirm_ui/server.py <project_path> --wait-only
    ```
@@ -154,7 +151,7 @@ python3 ${SKILL_DIR}/scripts/confirm_ui/server.py <project_path> --wait-only --w
 
 If the user selects chat after launch, apply `confirm-surface.md`'s in-run switch and finish every remaining stage in chat without relaunching.
 
-**Chat branch** — present the template mode and Stage-1 contract together and wait for one explicit response (registered candidates shown only when the user chooses `templates`; free design for an ordinary request, template mode for explicit intent or any supplied root, one root preselectable). Create no UI receipts and do not call `--complete-template-selection`. After confirmation, install or fuse selected roots (or close free design), retain that state as the Stage-2 gate, run final Stage 2 in chat, and keep one visible cumulative summary as the final state.
+**Chat branch** — present the template mode and Stage-1 contract together and wait for one explicit response (registered candidates shown only when the user chooses `templates`; free design for an ordinary request, template mode for explicit intent or any supplied root, one root preselectable). Create no UI receipts; keep the confirmed selection and installed state in the cumulative chat summary. After confirmation, install or fuse selected roots (or close free design), retain that state as the Stage-2 gate, run final Stage 2 in chat, and keep one visible cumulative summary as the final state.
 
 ⛔ **GATE — final state → Design Spec → conditional review → lock**: consume every present final value once into the complete, audited `design_spec.md` under [`strategist.md`](../references/strategist.md) §6.2, preserving each field's semantic type (acceptance never turns a Reference or Permission into a Literal) and every production, typography, image-source, and `image_notes` obligation; never reopen `result.json`.
 
@@ -259,7 +256,7 @@ Read the core as one batch with the exact detail files named by the retained `sp
 python3 ${SKILL_DIR}/scripts/svg_editor/server.py <project_path> --live --daemon
 ```
 
-Default first free port from `6060` (`--port N` binds strictly); read the URL from output or `<project_path>/live_preview/lock.json` and report it — or the launch failure — before the first SVG. It is a side process: never wait for it or for user confirmation, and keep it running until the user clicks **Exit preview** or asks in chat. Do not read or apply submitted annotations during generation; that window opens after Step 7 ([`live-preview.md`](stages/live-preview.md), which also describes staged direct edits).
+Default first free port from `6060` (`--port N` binds strictly); read the URL from output or `<project_path>/live_preview/lock.json` and report it — or the launch failure, or that the user or run instructions forbade starting it — before the first SVG. It is a side process: never wait for it or for user confirmation, and keep it running until the user clicks **Exit preview** or asks in chat. Do not read or apply submitted annotations during generation; that window opens after Step 7 ([`live-preview.md`](stages/live-preview.md), which also describes staged direct edits).
 
 **Cadence (Mandatory)**: P01–P05 → early gate (a planned roster of six or fewer pages skips it) → remaining pages → final gate, in one context. Every checker invocation follows one of two events: a gate point whose covered pages all exist, or the end of one consolidated repair pass. A run with neither predecessor is a pacing violation; validating an authoring pattern early is not a reason, because the same issues surface at the gate and are fixed in the same pass. Reload under Context validity above after context invalidation.
 
@@ -279,7 +276,7 @@ python3 ${SKILL_DIR}/scripts/svg_quality_checker.py <project_path> \
   --canonical-authoring --stage early --json
 ```
 
-`--json` writes the report file (`validation/svg_quality_early_report.json`); stdout stays the human-readable summary and is never parsed as JSON. The stage checks every authored page so far under the partial-roster rules. Repair under the consolidated-pass discipline in [`executor-base.md`](../references/executor-base.md) §3; a still-failing verification is the next batch. If terminal output is truncated, extract only `categories.blocking.issues` (and `categories.introduced.issues` when needed) from `validation/svg_quality_early_report.json`. The gate validates the method, not just the pages — emit one line before editing:
+`--json` writes the report file (`validation/svg_quality_early_report.json`); stdout stays the human-readable summary and is never parsed as JSON. The stage checks every authored page so far under the partial-roster rules. Repair under the consolidated-pass discipline in [`executor-base.md`](../references/executor-base.md) §3; a still-failing verification is the next batch. If terminal output is truncated, extract only `categories.blocking.issues` (and `categories.introduced.issues` when needed) from `validation/svg_quality_early_report.json`. The gate validates the method, not just the pages — emit one line before editing (in the conversation, not to a file):
 
 ```
 gate-signal: method=<rule resolved, or none> | page-local=<count> | not-exercised=<list>
@@ -353,7 +350,8 @@ python3 ${SKILL_DIR}/scripts/finalize_svg.py <project_path>
 
 | Decision | Flag |
 |---|---|
-| Explicit editable Chart/Table delivery decision | Append `--native-charts-and-tables` (markers, templates, semantic tables, and imported charts never activate it; formulas are always native) |
+| Explicit editable Chart/Table delivery decision, or a structured `chart` / `table` placeholder slot | Append `--native-charts-and-tables` (markers, templates, semantic tables, and imported charts never activate it; formulas are always native) |
+| Final checker reports oversized images | Append `--image-sizing display` |
 | Preserved or produced `animations.json` | Keep the base command; the exporter reads the sidecar |
 | Deck-wide motion setting | Append the resolved [`animations.md`](../references/animations.md) flags |
 | Explicit Custom Animations disable | Keep the sidecar and append `-a none` |
@@ -364,6 +362,10 @@ python3 ${SKILL_DIR}/scripts/finalize_svg.py <project_path>
 Sound: the optional post-motion pass is [`animations.md`](../references/animations.md) §2.2. For a narrated MP4, [`generate-audio`](stages/generate-audio.md) owns the delivery choice.
 
 **Success criterion**: the command exits 0 and produces `exports/<project_name>_<timestamp>.pptx`, `validation/<project_name>_<timestamp>.report.json` with `passed` or `passed-with-warnings`, and `validation/<project_name>_<timestamp>.trace.json` when `--conversion-trace` was enabled. The exporter itself requires the current matching `final` quality report and exits nonzero on a missing, unreadable, unsupported, non-final, blocking, stale, or unverifiable one. Read the compact `[POSTFLIGHT]` receipt (`status`, `quality_gate`, slide count, warning counts, paths), disclose material warnings, and never `cat` the full report on success. Retain the report path for a later `deck_motion` handoff; postflight proves the package, not a later MP4 audio track.
+
+### Revision Round (delivered project)
+
+A delivered project that comes back with a change stays in this route; planning does not restart. Act at the owning layer. A wording change, an added condition, or a re-titled page edits the SVG, then its §IX block, `notes/total.md`, and every page that repeats the line (a chapter page's route, the contents page). A page inserted, dropped, or moved renumbers the roster first — files, footers, contents-page numbers, §IX blocks, `page_rhythm` / `page_visualizations` rows, `animations.json` keys, `notes/total.md` headings, same-deck hyperlink targets — then authors or removes the page; whatever the moved page carried moves with it: a Morph `from` names the new preceding page and a "next chapter" preview group follows its boundary. A deck-wide colour or family runs [`update_spec.py`](../scripts/docs/update_spec.md); derived tints, pages designed around the old value, and spec prose naming it are edited by hand; a generated image that painted the old accent does not follow, and regenerating it redraws the composition, so report it instead of regenerating unprompted; a hand-edited Chart/Table fallback is re-stamped before the gate. A renumbered roster first clears the per-page files under `notes/` and `svg_final/`, which 7.1 and 7.2 only write. Rerun the final quality gate (it compares §IX with `svg_output/`), `animation_config.py validate`, 7.1 when notes changed, 7.2, and 7.3; calibration, the early gate, and `verify-charts` return only when a type role, the first pages, or a chart's geometry changed. Earlier exports stay; the new ones carry their own timestamp.
 
 ## ✅ Generate PPTX Complete
 

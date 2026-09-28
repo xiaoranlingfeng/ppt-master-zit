@@ -13,7 +13,9 @@ Dependencies:
     Standard library plus local PPT Master validation modules.
 """
 
+import json
 import sys
+from xml.etree import ElementTree as ET
 from pathlib import Path
 
 from attribution_guard import require_skill_integrity
@@ -88,6 +90,8 @@ def _default_json_report_path(
     checker: SVGQualityChecker,
     target: str,
     stage: str,
+    *,
+    roundtrip: bool = False,
 ) -> Path:
     """Choose a stage-specific report path without overwriting the final gate."""
     target_path = Path(target)
@@ -98,6 +102,8 @@ def _default_json_report_path(
         "early": "svg_quality_early_report.json",
         "page": "svg_quality_page_report.json",
     }[stage]
+    if roundtrip:
+        return target_path / "validation" / report_name
     if (
         (project_path / "svg_output").is_dir()
         or (project_path / "design_spec.md").is_file()
@@ -134,6 +140,7 @@ def print_usage() -> None:
     print("  --page <basename|path>         Required with --stage page; must resolve under")
     print("                                  the target project's svg_output/ directory.")
     print("  --json                         Write a machine-readable quality report")
+    print("  --slot-capacity-report         With --template-mode: print advisory slot JSON only")
     print("  --json-output <path>           Override the JSON report path")
     print("  --export                       Write a plain-text quality report")
     print("  --output <path>                Override the plain-text report path")
@@ -175,6 +182,24 @@ def main() -> None:
         sys.exit(1)
 
     template_mode = "--template-mode" in sys.argv
+    if "--slot-capacity-report" in sys.argv:
+        if not template_mode:
+            print("[ERROR] --slot-capacity-report requires --template-mode", file=sys.stderr)
+            sys.exit(1)
+        from .slot_capacity import slot_capacity_report
+
+        target = Path(sys.argv[1])
+        source = target / "templates" if (target / "templates").is_dir() else target
+        files = [source] if source.is_file() else sorted(source.glob("*.svg"))
+        if not files:
+            print(f"[ERROR] No template SVG files found: {source}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            print(json.dumps(slot_capacity_report(files), ensure_ascii=False, indent=2))
+        except (OSError, ValueError, KeyError, TypeError, ET.ParseError) as exc:
+            print(f"[ERROR] Cannot read template slots: {exc}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
     quick_generate = "--quick-generate" in sys.argv
     canonical_authoring = "--canonical-authoring" in sys.argv
     roundtrip = "--roundtrip" in sys.argv
@@ -251,6 +276,7 @@ def main() -> None:
             print("=" * 80)
             checker.check_directory(str(project))
     else:
+        checker.partial_roster = stage in {"early", "page", "first-page"}
         if roundtrip:
             checker.check_roundtrip_workspace(target)
         elif stage == "early":
@@ -280,6 +306,16 @@ def main() -> None:
             checker.check_directory(check_target, expected_format)
 
     if not roundtrip and stage == "final" and Path(target).is_dir():
+        if checker._structured_native_slots:
+            print(
+                "[TIP] Structured "
+                + "/".join(checker._structured_native_slots)
+                + " placeholder slot(s) are filled by native objects: this deck "
+                "exports only with --native-charts-and-tables and the standard "
+                "export fails, and the object inside the slot is no top-level animation "
+                "anchor; for both forms author it as a Slide-local marker group "
+                "beside the slots instead."
+            )
         if checker._has_incomplete_page_roster:
             print(
                 "[TIP] This final-stage run found an incomplete page roster. "
@@ -305,7 +341,9 @@ def main() -> None:
                 sys.exit(1)
             json_output = Path(sys.argv[idx + 1])
         else:
-            json_output = _default_json_report_path(checker, target, stage)
+            json_output = _default_json_report_path(
+                checker, target, stage, roundtrip=roundtrip,
+            )
         checker.export_json_report(
             str(json_output),
             target=target,

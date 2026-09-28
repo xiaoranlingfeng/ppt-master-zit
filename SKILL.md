@@ -7,7 +7,7 @@ description: >
   Use when the user explicitly asks for ppt-master-zit / zit 版, or wants
   decks whose images come from the local ComfyUI queue.
 metadata:
-  version: "6.3.2"  # base: official ppt-master v6.3.2
+  version: "6.6.0"  # base: official ppt-master v6.6.0
   copyright: "Copyright (c) 2025-2026 Hugo He"
   license: "MIT"
   official_repository: "https://github.com/hugohe3/ppt-master"

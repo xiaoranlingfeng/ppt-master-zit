@@ -468,6 +468,20 @@ def project_image_errors(
     return sorted(errors)
 
 
+def shape_display_name(elem: ET.Element, fallback: str) -> str:
+    """Name a PowerPoint object after its SVG identity when it has one.
+
+    ``data-pptx-shape-name`` wins, then the SVG ``id`` (or ``data-name``), so
+    the Selection and Animation panes show ``p08-rail-edge`` rather than
+    ``Freeform 9``; unnamed objects keep the positional fallback.
+    """
+    for attribute in ('data-pptx-shape-name', 'id', 'data-name'):
+        value = (elem.get(attribute) or '').strip()
+        if value:
+            return value
+    return fallback
+
+
 def _wrap_shape(
     shape_id: int, name: str,
     off_x: int, off_y: int,
@@ -550,7 +564,7 @@ def _wrap_geometry_object(
     """Wrap a semantic leaf as a shape or connector without guessing."""
     if not effect_xml:
         effect_xml = _element_effect_xml(elem, ctx)
-    name = elem.get('data-pptx-shape-name') or name
+    name = shape_display_name(elem, name)
     shape_style_xml = _decode_shape_style(elem)
     object_kind = elem.get('data-pptx-object')
     if object_kind != 'connector':
@@ -598,20 +612,20 @@ def _imported_placeholder_xml(elem: ET.Element) -> str:
     """Restore an imported slide placeholder marker when its identity is exact."""
     placeholder_type = elem.get('data-ph-type')
     placeholder_index = elem.get('data-pptx-placeholder-index')
-    if not placeholder_type or placeholder_index is None:
+    if placeholder_type is None and placeholder_index is None:
         return ''
-    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9]*', placeholder_type):
+    if placeholder_type is not None and not re.fullmatch(r'[A-Za-z][A-Za-z0-9]*', placeholder_type):
         raise ValueError(
             f'Invalid imported placeholder type: {placeholder_type!r}'
         )
-    if not placeholder_index.isdigit() or int(placeholder_index) > 0xFFFFFFFF:
+    if placeholder_index is not None and (
+        not placeholder_index.isdigit() or int(placeholder_index) > 0xFFFFFFFF
+    ):
         raise ValueError(
             f'Invalid imported placeholder index: {placeholder_index!r}'
         )
-    attrs = {
-        'type': placeholder_type,
-        'idx': placeholder_index,
-    }
+    attrs = {name: value for name, value in (('type', placeholder_type), ('idx', placeholder_index))
+             if value is not None}
     placeholder_size = elem.get('data-pptx-placeholder-size')
     if placeholder_size is not None:
         if placeholder_size not in {'full', 'half', 'quarter'}:
@@ -1909,6 +1923,14 @@ def convert_polygon(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None
     fill = build_fill_xml(elem, ctx, fill_op)
     stroke = build_stroke_xml(elem, ctx, stroke_op)
 
+    effect = ''
+    filt_id = get_effective_filter_id(elem, ctx)
+    if filt_id and filt_id in ctx.defs:
+        effect = build_effect_xml(
+            ctx.defs[filt_id],
+            get_element_opacity(elem, ctx),
+        )
+
     shape_id = _claim_element_shape_id(elem, ctx)
     xfrm_attr = ''
     off_x = px_to_emu(min_x)
@@ -1931,7 +1953,7 @@ def convert_polygon(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None
             ctx,
             shape_id, f'Polygon {shape_id}',
             off_x, off_y, w_emu, h_emu,
-            geom, fill, stroke, xfrm_attr=xfrm_attr,
+            geom, fill, stroke, effect, xfrm_attr=xfrm_attr,
         ),
         bounds_emu=bounds_emu,
     )
@@ -2954,7 +2976,10 @@ def _build_run_properties_xml(
     spc_attr = _letter_spacing_to_drawingml_spc(letter_spacing_px)
     baseline_attr = f' baseline="{baseline_shift}"' if baseline_shift else ''
 
-    fonts = parse_font_family(ff) if ff else default_fonts
+    fonts = (
+        parse_font_family(ff, ctx.primary_language if ctx is not None else None)
+        if ff else default_fonts
+    )
     run_fonts = (
         {
             'latin': fixed_font_family,
@@ -3174,7 +3199,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None:
     else:
         letter_spacing_px = 0.0
 
-    fonts = parse_font_family(font_family_str)
+    fonts = parse_font_family(font_family_str, ctx.primary_language)
 
     parent_attrs: dict[str, Any] = {
         'fill': fill_color,
@@ -3627,7 +3652,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None:
 
     shape_xml = f'''<p:sp>
 <p:nvSpPr>
-<p:cNvPr id="{shape_id}" name="TextBox {shape_id}"/>
+<p:cNvPr id="{shape_id}" name="{_xml_escape(shape_display_name(elem, f'TextBox {shape_id}'))}"/>
 <p:cNvSpPr txBox="1"/><p:nvPr/>
 </p:nvSpPr>
 <p:spPr>
@@ -4978,7 +5003,7 @@ def convert_image(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None:
 
     return ShapeResult(xml=f'''<p:pic>
 <p:nvPicPr>
-<p:cNvPr id="{shape_id}" name="Image {shape_id}"/>
+<p:cNvPr id="{shape_id}" name="{_xml_escape(shape_display_name(elem, f'Image {shape_id}'))}"/>
 <p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>
 <p:nvPr/>
 </p:nvPicPr>
@@ -5561,7 +5586,7 @@ def convert_nested_svg(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | N
 
     return ShapeResult(xml=f'''<p:pic>
 <p:nvPicPr>
-<p:cNvPr id="{shape_id}" name="Image {shape_id}"/>
+<p:cNvPr id="{shape_id}" name="{_xml_escape(shape_display_name(elem, f'Image {shape_id}'))}"/>
 <p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>
 <p:nvPr/>
 </p:nvPicPr>

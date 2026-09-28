@@ -52,6 +52,7 @@ from xml.etree import ElementTree as ET
 
 from compact_svg_coordinates import compact_svg_tree
 from console_encoding import configure_utf8_stdio
+from hyperlink_contract import ADOPTED_SOURCE_LINK_ATTR, SOURCE_HREF_ATTR
 from native_payloads import (
     CUSTOM_GEOMETRY_ATTRIBUTE,
     CUSTOM_GEOMETRY_REF_ATTRIBUTE,
@@ -199,6 +200,31 @@ _ADOPT_INHERITED_ATTRIBUTES = tuple(INHERITABLE_ATTRS)
 
 def _local_name(name: object) -> str:
     return name.rsplit("}", 1)[-1] if isinstance(name, str) else ""
+
+
+def semantic_shape_text_component(
+    shape: ET.Element,
+    *,
+    included_text_ids: set[int] | None = None,
+) -> ET.Element | None:
+    """Validate text compiled into one semantic shape, excluding native restores."""
+    def included(element: ET.Element) -> bool:
+        return (
+            element.tag.replace(f'{{{SVG_NS}}}', '') == 'text'
+            and (included_text_ids is None or id(element) in included_text_ids)
+        )
+
+    texts = [child for child in shape if included(child)]
+    nested_texts = [child for child in shape.iter() if included(child)]
+    if nested_texts != texts:
+        raise ValueError('Semantic shape text must be one direct SVG text component')
+    if not texts:
+        return None
+    if len(texts) != 1:
+        raise ValueError('Semantic shape requires at most one paragraph-based text component')
+    if shape.get('data-pptx-frame') is None:
+        raise ValueError('Semantic shape text requires data-pptx-frame on its owner')
+    return texts[0]
 
 
 @dataclass
@@ -1314,9 +1340,11 @@ def _externalize_large_source_objects(
     def visit(parent: ET.Element, inside_source_ref: bool) -> None:
         for child in list(parent):
             source_ref = child.get(SOURCE_REF_ATTRIBUTE)
-            if source_ref and not inside_source_ref:
+            forced_proxy = child.get(SOURCE_PROXY_ATTRIBUTE) == SOURCE_PROXY_KIND
+            if source_ref and (not inside_source_ref or forced_proxy):
                 candidates.append((parent, child))
-                continue
+                if forced_proxy:
+                    continue
             visit(child, inside_source_ref or bool(source_ref))
 
     visit(root, False)
@@ -2256,6 +2284,9 @@ def adopt_authoring_object(
     )
     adopted = copy.deepcopy(source_element)
     adopted.tail = None
+    from authoring_roundtrip import preserve_adopted_source_links
+
+    preserve_adopted_source_links(authoring_dir, source_name, source_root, source_element, adopted)
     imported_icons = [
         item
         for item in adopted.iter()
@@ -2329,7 +2360,20 @@ def adopt_authoring_object(
     if not adopted_id:
         raise ValueError("Adopted object lost its required id")
     _append_adopted_definitions(target_root, adopted_definitions)
-    target_root.append(adopted)
+    shape_href = adopted.get("data-pptx-shape-hyperlink")
+    if shape_href and not any(_local_name(item.tag) == "a" for item in adopted.iter()):
+        adopted.attrib.pop("data-pptx-shape-hyperlink")
+        wrapper = ET.Element(f"{{{SVG_NS}}}a", {"href": shape_href})
+        source_href = adopted.attrib.pop(SOURCE_HREF_ATTR, None)
+        if source_href is not None:
+            wrapper.set(SOURCE_HREF_ATTR, source_href)
+        adopted_link = adopted.attrib.pop(ADOPTED_SOURCE_LINK_ATTR, None)
+        if adopted_link is not None:
+            wrapper.set(ADOPTED_SOURCE_LINK_ATTR, adopted_link)
+        wrapper.append(adopted)
+        target_root.append(wrapper)
+    else:
+        target_root.append(adopted)
 
     original_target = target_path.read_bytes()
     try:

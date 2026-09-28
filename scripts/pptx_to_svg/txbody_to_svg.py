@@ -27,6 +27,7 @@ from typing import Callable
 from unicodedata import east_asian_width
 from xml.etree import ElementTree as ET
 
+from hyperlink_contract import SOURCE_HREF_ATTR
 from svg_to_pptx.drawingml.utils import detect_text_lang, is_cjk_char
 
 from .color_resolver import ColorPalette, find_color_elem, resolve_color
@@ -153,6 +154,7 @@ def convert_txbody(
     )
     if not paragraphs or not _has_visible_text(paragraphs):
         return TextResult()
+    _apply_norm_autofit(body_pr, paragraphs)
 
     # Insets + anchor + wrap
     lins = _read_emu_attr(body_pr, "lIns", DEFAULT_INSETS_EMU["l"])
@@ -280,6 +282,7 @@ def convert_vertical_txbody(
         strict=strict,
         diagnostic_sink=diagnostic_sink,
     )
+    _apply_norm_autofit(body_pr, paragraphs)
     if body_pr is not None and body_pr.attrib.get("vert") == "eaVert":
         return _convert_east_asian_vertical(
             paragraphs,
@@ -762,6 +765,33 @@ def _parse_paragraph(
     return para
 
 
+def _apply_norm_autofit(
+    body_pr: ET.Element | None,
+    paragraphs: list[TextParagraph],
+) -> None:
+    """Scale runs by the stored shrink-on-overflow result PowerPoint renders with."""
+    autofit = body_pr.find("a:normAutofit", NS) if body_pr is not None else None
+    if autofit is None:
+        return
+
+    def fraction(attr: str, default: float) -> float:
+        try:
+            value = int(autofit.attrib.get(attr, "")) / 100000.0
+        except ValueError:
+            return default
+        return value if 0.0 < value <= 1.0 else default
+
+    font_scale = fraction("fontScale", 1.0)
+    line_scale = 1.0 - fraction("lnSpcReduction", 0.0)
+    if font_scale == 1.0 and line_scale == 1.0:
+        return
+    for para in paragraphs:
+        para.empty_line_font_size_px *= font_scale
+        para.line_height_ratio *= line_scale
+        for run in para.runs:
+            run.font_size_px *= font_scale
+
+
 def _font_size_px(
     sources: tuple[ET.Element | None, ...],
     default_font_size_px: float,
@@ -888,6 +918,9 @@ def _build_run(
         alt_lang=alt_lang,
     )
 
+    # No typeface anywhere in the chain means the theme's minor font pair.
+    latin_face = latin_face or theme_fonts.get("minorLatin") or None
+    ea_face = ea_face or theme_fonts.get("minorEastAsia") or None
     font_family = _build_font_stack(latin_face, ea_face, cs_face)
     hyperlink_href: str | None = None
     if rpr is not None and hyperlink_resolver is not None:
@@ -1691,7 +1724,11 @@ def _wrap_run_hyperlink(markup: str, run: TextRun) -> str:
     """Wrap one visible SVG run in the canonical hyperlink carrier."""
     if not run.hyperlink_href:
         return markup
-    return f'<a href="{_xml_escape(run.hyperlink_href)}">{markup}</a>'
+    provenance = (
+        f' {SOURCE_HREF_ATTR}="{_xml_escape(run.hyperlink_href)}"'
+        if run.hyperlink_href.startswith('#slide-') else ''
+    )
+    return f'<a href="{_xml_escape(run.hyperlink_href)}"{provenance}>{markup}</a>'
 
 
 def _xml_escape(text: str) -> str:

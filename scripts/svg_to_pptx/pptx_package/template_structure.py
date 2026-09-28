@@ -37,6 +37,8 @@ from pptx_to_svg.preset_authoring import (
 
 from ..drawingml.utils import (
     is_picture_effect_carrier,
+    parse_inline_style,
+    parse_opacity,
     parse_project_geometry_length,
     project_geometry_length_errors,
 )
@@ -454,6 +456,8 @@ def _svg_canvas(root: ET.Element) -> tuple[float, float, float, float]:
 def _is_full_canvas_solid_rect(
     elem: ET.Element,
     canvas: tuple[float, float, float, float],
+    *,
+    root: ET.Element | None = None,
 ) -> bool:
     """Return whether a direct rect is eligible for scoped p:bg compilation."""
     if canvas[2] <= 0 or canvas[3] <= 0:
@@ -461,6 +465,24 @@ def _is_full_canvas_solid_rect(
     if _local_tag(elem) != "rect":
         return False
     if any(elem.get(attr) for attr in ("transform", "filter", "clip-path")):
+        return False
+    style = parse_inline_style(elem.get("style"))
+    root_style = parse_inline_style(root.get("style")) if root is not None else {}
+
+    def root_value(name: str) -> str | None:
+        return root_style.get(name, root.get(name)) if root is not None else None
+
+    try:
+        fill_opacity = style.get("fill-opacity", elem.get("fill-opacity"))
+        if fill_opacity in {None, "inherit"}:
+            fill_opacity = root_value("fill-opacity")
+        opacity = style.get("opacity", elem.get("opacity"))
+        if opacity == "inherit":
+            opacity = root_value("opacity")
+        if any(parse_opacity(value, allow_percentage=True) < 1
+               for value in (fill_opacity, opacity, root_value("opacity"))):
+            return False
+    except ValueError:
         return False
     try:
         geometry = (
@@ -1149,8 +1171,12 @@ def _native_geometry(raw: Any, context: str) -> tuple[float, float, float, float
         values = tuple(float(raw[key]) for key in ("x", "y", "width", "height"))
     except (KeyError, TypeError, ValueError) as exc:
         raise TemplateStructureError(f"{context} geometry is invalid") from exc
-    if not all(math.isfinite(value) for value in values) or values[2] <= 0 or values[3] <= 0:
-        raise TemplateStructureError(f"{context} geometry must be finite and positive")
+    if not all(math.isfinite(value) for value in values) or values[2] < 0 or values[3] < 0:
+        raise TemplateStructureError(f"{context} geometry must be finite and non-negative")
+    if values[2] == 0 or values[3] == 0:
+        # PowerPoint writes <a:ext cx="0" cy="0"/> for a collapsed placeholder
+        # (built-in vertical-text layouts do this); it carries no usable box.
+        return None
     return values
 
 
@@ -1214,7 +1240,7 @@ def load_native_structure_contract(
     layouts: list[NativeLayoutSpec] = []
     seen_keys: set[str] = set()
     seen_parts: set[str] = set()
-    for index, item in enumerate(raw_layouts, start=1):
+    for index, item in enumerate(raw_layouts):
         context = f"{contract_path.name} layouts[{index}]"
         if not isinstance(item, dict):
             raise TemplateStructureError(f"{context} must be an object")
@@ -1247,7 +1273,7 @@ def load_native_structure_contract(
         if not isinstance(raw_placeholders, list):
             raise TemplateStructureError(f"{context} placeholders must be a list")
         placeholders: list[NativePlaceholderSpec] = []
-        for ph_index, placeholder in enumerate(raw_placeholders, start=1):
+        for ph_index, placeholder in enumerate(raw_placeholders):
             ph_context = f"{context} placeholders[{ph_index}]"
             if not isinstance(placeholder, dict):
                 raise TemplateStructureError(f"{ph_context} must be an object")
@@ -1631,7 +1657,7 @@ def parse_template_slide(
         binding_raw = elem.get("data-pptx-binding")
         carrier_raw = elem.get("data-pptx-carrier")
         editable_raw = elem.get("data-pptx-editable")
-        is_background = _is_full_canvas_solid_rect(elem, canvas)
+        is_background = _is_full_canvas_solid_rect(elem, canvas, root=root)
         effective_layer = layer or ("slide" if is_background else None)
 
         if (
@@ -1725,7 +1751,8 @@ def parse_template_slide(
             raise TemplateStructureError(
                 f"{svg_path.name}: {element_id or tag} violates template paint order; "
                 "use Master background, Layout background, Slide background, "
-                "Master shapes, Layout shapes, then Slide content/placeholders"
+                "Master shapes, Layout shapes, then Slide content/placeholders. "
+                "Full-canvas solid rects are treated as backgrounds; translucent overlays are not backgrounds"
             )
         last_order_rank = order_rank
 
@@ -2106,12 +2133,14 @@ def structured_layout_definition_files(
     specs: list[TemplateSlideSpec],
     structure_lock: PptxStructureLock,
 ) -> list[Path]:
-    """Validate the unique Layout roster and return unused prototype SVGs.
+    """Validate the explicit registered Layout set and return unused carriers.
 
     A generated page can be the carrier for a used Layout definition. A Layout
     with no generated page must point at one installed template SVG; the builder
     converts that SVG on an internal trailing slide and removes the carrier slide
     after registering the reusable Layout.
+    Installed prototypes absent from ``pptx_layouts`` are never compiled.
+    Lockless Quick export compiles only its public pages' Layouts.
     """
     if structure_lock.mode != "structured":
         return []
@@ -2996,7 +3025,9 @@ def _layout_contract_difference(
         details.append("generated Layout element order differs")
     if not details:
         details.append(
-            "shared Layout element metadata, geometry, topology, or content differs"
+            "shared Layout element metadata (data-pptx-* attributes), geometry, "
+            "topology, or content differs; fills, strokes, and gradients may be "
+            "repainted"
         )
     return "; ".join(details)
 
@@ -3294,8 +3325,13 @@ def template_prototype_errors(
             errors.append(
                 f"{spec.svg_path.name}: template Master structure differs "
                 f"from prototype {reference.svg_path.name}; strict and adaptive "
-                "routes must retain its ids, topology, geometry, and content"
-                + (" including mirror visual styling" if literal_visual else "")
+                "routes must retain its ids, topology, geometry, data-pptx-* "
+                "metadata, and content"
+                + (
+                    " including mirror visual styling"
+                    if literal_visual
+                    else "; fills, strokes, and gradients may be repainted"
+                )
                 + (
                     f"; first difference: {master_difference}"
                     if master_difference else ""
@@ -3689,7 +3725,7 @@ def _placement_lint_errors(svg_path: Path) -> list[str]:
         layer = (elem.get("data-pptx-layer") or "").strip().lower() or None
         if layer not in _LAYERS:
             layer = None
-        is_background = _is_full_canvas_solid_rect(elem, canvas)
+        is_background = _is_full_canvas_solid_rect(elem, canvas, root=root)
         effective_layer = layer or ("slide" if is_background else None)
         if is_background and effective_layer is not None:
             order_rank = {"master": 0, "layout": 1, "slide": 2}[effective_layer]
@@ -3703,7 +3739,8 @@ def _placement_lint_errors(svg_path: Path) -> list[str]:
             errors.append(
                 f"{svg_path.name}: {elem.get('id') or tag} violates template paint "
                 "order; use Master background, Layout background, Slide background, "
-                "Master shapes, Layout shapes, then Slide content/placeholders"
+                "Master shapes, Layout shapes, then Slide content/placeholders. "
+                "Full-canvas solid rects are treated as backgrounds; translucent overlays are not backgrounds"
             )
             continue
         last_order_rank = order_rank

@@ -147,7 +147,11 @@ material, or texture inside editable glyphs, fill the `<text>` (or a
 non-positional `<tspan>`) with a registered single-image `<pattern>` marked
 `data-pptx-text-image-fill="stretch"` or `"tile"`. It exports as a PowerPoint
 run picture fill (`stretch` `Native-normalized`; `tile` needs visual review),
-not as a general SVG pattern; the text stays editable.
+not as a general SVG pattern; the text stays editable. The glyphs are the
+only thing showing the image, so the fill must read as one value against the
+ground — a near-uniform texture or material, not a scene, gradient, or
+anything with its own light and dark regions, which breaks the letterforms
+into unreadable patches (a 2026-09-10 cover title was lost this way).
 
 ```xml
 <defs>
@@ -173,7 +177,7 @@ Preset patterns are a separate PPT interface in [`native-data-interface.md`](./n
 
 A filter is native-effect metadata, not a pixel-filter surface: one direct
 `<defs><filter>` referenced as a direct `filter="url(#id)"` on a `<rect>`,
-`<circle>`, `<image>`, `<path>`, `<text>`, or a helper-authored preset group,
+`<circle>`, `<polygon>`, `<image>`, `<path>`, `<text>`, or a helper-authored preset group,
 built from `feDropShadow` or the blur + flood + composite + merge graph below
 with explicit `stdDeviation`, `dx`/`dy`, and `flood-opacity`. A meaningful
 offset becomes one outer shadow; zero offset — even `feDropShadow` with
@@ -251,7 +255,11 @@ alone. A clip disables `meet` frame-fit, so match the box to the source ratio
 or use `slice`; put a §6.4 filter directly on an unclipped image, and for a
 clipped one on an exact outer `<g>` whose sole visual child is that image —
 never both on the same `<image>`. A nested `<svg>` is only the exact
-single-image crop wrapper the crop parser accepts, not a general viewport.
+single-image crop wrapper the crop parser accepts, not a general viewport;
+its required form (outer `preserveAspectRatio="none"` + `overflow="hidden"`
++ unit-space `viewBox`, child `<image>` at `0 0 1 1`) is in
+[`svg-contract.md`](../scripts/docs/svg-contract.md) under "Nested SVG is
+picture-crop transport".
 
 | Overlay | Construction | Typical stops / alpha |
 |---|---|---|

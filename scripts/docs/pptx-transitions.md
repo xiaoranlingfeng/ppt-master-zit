@@ -242,7 +242,7 @@ round-trip export keeps existing object names and transition XML.
 |---|---|---|---|
 | Generated PPTX CLI | fade, 0.4s; no sound | click | auto-advance maps to both; an optional sidecar sound is project-local |
 | Recorded narration | Preserve resolved enter | narration | none remains visually none |
-| Edit Native PPTX (`svg_to_pptx.py --roundtrip`) | preserve source | preserve source | `-t` or `animations.json` rows replace per output page as an overlay; `--use-narration-timings` derives advance from narration |
+| Edit Native PPTX (`svg_to_pptx.py --roundtrip`) | preserve source | preserve source | Compare enter, advance, and animation against the import baseline separately. `-t` or explicit slide `transition` replaces enter; omission inherits source even with importer `defaults.transition: none`. Effect-only edits retain `advClick` / `advTm`; explicit advance or `--use-narration-timings` replaces advance |
 
 The public `create_pptx_with_native_svg` Python API retains its legacy 0.5s
 default; the generated-deck CLI explicitly passes 0.4s.
@@ -290,6 +290,12 @@ effect prefix without updating these attributes corrupts compatibility.
 **Package timing rule**: when a route writes advTm, set
 ppt/presProps.xml p:presentationPr/p:showPr useTimings=1. Do not write showPr
 into ppt/presentation.xml.
+
+**Kiosk show**: `svg_to_pptx.py --kiosk` writes `p:showPr loop="1"` with a
+`p:kiosk` child (PowerPoint's "Browsed at a kiosk"): the show loops until
+Escape and ignores click and keyboard advance, so only `advTm` timings and
+hyperlinks move between slides. It leaves `useTimings` to the timing rule, so
+a hyperlink-driven touch guide can be a kiosk show without timed advance.
 
 ---
 

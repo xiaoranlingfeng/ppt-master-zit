@@ -34,7 +34,7 @@ from pptx_transitions import (
 )
 from slide_roster import discover_slide_svgs
 
-from .drawingml.utils import SVG_NS
+from .drawingml.utils import SVG_NS, XLINK_NS
 from .pptx_package.narration import AUDIO_CONTENT_TYPES
 from .semantic_markers import is_static_page_frame
 
@@ -67,7 +67,15 @@ _CHROME_ID_TOKENS = frozenset({
     'header', 'footer',
     'chrome', 'watermark',
     'pagenumber', 'pagenum', 'slidenumber', 'slidenum',
-    'logo', 'nav', 'rule',
+    'logo', 'nav',
+})
+# `rule` is chrome only as a bare id or a decorative line name (`rule`,
+# `rule-2`, `hairline-rule`); a content group such as `commit-rule` is not.
+_RULE_TOKENS = frozenset({'rule', 'rules'})
+_RULE_QUALIFIERS = frozenset({
+    'hairline', 'thin', 'horizontal', 'vertical', 'h', 'v',
+    'top', 'bottom', 'left', 'right', 'mid', 'middle',
+    'section', 'page', 'title', 'header', 'footer', 'divider',
 })
 
 
@@ -82,6 +90,8 @@ class GroupTarget:
     structurally_static: bool = False
     has_hyperlink: bool = False
     hidden_reason: str | None = None
+    placeholder: str | None = None
+    on_structured_page: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,8 +122,20 @@ def is_chrome_id(elem_id: str | None) -> bool:
     compact = lower.replace('-', '').replace('_', '')
     if compact in _CHROME_ID_TOKENS:
         return True
-    tokens = re.split(r'[-_]', lower)
-    return any(t in _CHROME_ID_TOKENS for t in tokens if t)
+    tokens = [t for t in re.split(r'[-_]', lower) if t]
+    if any(t in _CHROME_ID_TOKENS for t in tokens):
+        return True
+    if compact in _RULE_TOKENS:
+        return True
+    if tokens and tokens[0] in _RULE_TOKENS and all(
+        t.isdigit() or t in _RULE_QUALIFIERS for t in tokens[1:]
+    ):
+        return True
+    if tokens and tokens[-1] in _RULE_TOKENS and all(
+        t in _RULE_QUALIFIERS or t.isdigit() for t in tokens[:-1]
+    ):
+        return True
+    return False
 
 
 _TITLE_BLOCK_TOKENS = frozenset({'header', 'footer'})
@@ -179,6 +201,7 @@ def scan_root_primitives(svg_path: Path) -> dict[str, str]:
     root = ET.parse(str(svg_path)).getroot()
     primitives: dict[str, str] = {}
     for child in root:
+        child = effective_top_level(child)
         tag = _tag_name(child)
         if tag in _NON_VISUAL_TAGS or tag == 'g':
             continue
@@ -191,6 +214,39 @@ def scan_root_primitives(svg_path: Path) -> dict[str, str]:
             description += f' with data-pptx-role="{role}"'
         primitives[elem_id] = description
     return primitives
+
+
+_ANCHOR_OWN_ATTRIBUTES = frozenset((
+    'href',
+    f'{{{XLINK_NS}}}href',
+    'xlink:href',
+))
+
+
+def anchor_wrapped_group(elem: ET.Element) -> ET.Element | None:
+    """Return the single ``<g>`` a bare hyperlink anchor wraps, else ``None``.
+
+    ``<a href><g id>…</g></a>`` is the canonical whole-object link
+    (native-hyperlinks.md §2). The anchor carries only its target, so the
+    group inside is the page's real top-level unit: it stays the animation
+    anchor and the checker's grouping unit, and export attaches the click to
+    its leaves. An anchor with other attributes or several children is an
+    ordinary container.
+    """
+    if _tag_name(elem) != 'a':
+        return None
+    if any(attr not in _ANCHOR_OWN_ATTRIBUTES for attr in elem.attrib):
+        return None
+    visual = [child for child in elem if _tag_name(child) not in _NON_VISUAL_TAGS]
+    if len(visual) != 1 or _tag_name(visual[0]) != 'g':
+        return None
+    return visual[0]
+
+
+def effective_top_level(elem: ET.Element) -> ET.Element:
+    """Return the element a top-level scan should treat ``elem`` as."""
+    wrapped = anchor_wrapped_group(elem)
+    return elem if wrapped is None else wrapped
 
 
 def usable_animation_group_id(raw: str | None) -> str | None:
@@ -215,6 +271,7 @@ def scan_svg_targets(
     page_reference_size = _page_reference_size(root)
 
     for child in root:
+        child = effective_top_level(child)
         tag = _tag_name(child)
         if tag in _NON_VISUAL_TAGS:
             continue
@@ -262,6 +319,8 @@ def scan_svg_targets(
                 chrome=chrome,
                 structurally_static=structurally_static,
                 hidden_reason=hidden_reason,
+                placeholder=placeholder,
+                on_structured_page=root.get('data-pptx-layout') is not None,
                 has_hyperlink=any(
                     _tag_name(descendant) == 'a'
                     or descendant.get(SHAPE_HYPERLINK_ATTR) is not None
@@ -298,20 +357,69 @@ def _require_unique_target_ids(
         raise ValueError(_duplicate_target_error(slide_name, duplicates))
 
 
+ROUNDTRIP_AUTHORING_DIR = 'authoring-svg-flat'
+ROUNDTRIP_PAGE_PLAN = 'page_plan.json'
+
+
+def resolve_slide_svg_files(project_path: Path) -> tuple[list[Path], str | None]:
+    """Return the project's slide SVGs in output order, or an error message.
+
+    A Generate project keeps its roster in ``svg_output/``. A round-trip
+    workspace keeps it in ``authoring-svg-flat/``; when ``page_plan.json``
+    exists its ``pages`` order is the output roster (each entry's ``svg``
+    name, else the source page's ``slide_NN.svg``), which is the roster the
+    round-trip exporter reads the sidecar against. A plan the exporter would
+    reject falls back to the authoring files in filename order.
+    """
+    svg_dir = project_path / 'svg_output'
+    if svg_dir.is_dir():
+        return discover_slide_svgs(svg_dir), None
+    authoring_dir = project_path / ROUNDTRIP_AUTHORING_DIR
+    if not authoring_dir.is_dir():
+        return [], f'svg_output directory not found: {svg_dir}'
+    files = discover_slide_svgs(authoring_dir)
+    plan_path = project_path / ROUNDTRIP_PAGE_PLAN
+    if not plan_path.is_file():
+        return files, None
+    by_source: dict[int, Path] = {}
+    for path in files:
+        match = re.fullmatch(r'slide_(\d+)', path.stem)
+        if match:
+            by_source[int(match.group(1))] = path
+    try:
+        pages = json.loads(plan_path.read_text(encoding='utf-8')).get('pages')
+    except (OSError, ValueError, AttributeError):
+        return files, None
+    if not isinstance(pages, list):
+        return files, None
+    ordered: list[Path] = []
+    for raw in pages:
+        if not isinstance(raw, dict):
+            return files, None
+        svg_name = raw.get('svg')
+        if isinstance(svg_name, str) and svg_name:
+            path = authoring_dir / svg_name
+        else:
+            path = by_source.get(raw.get('source_slide'))
+        if path is None or not path.is_file():
+            return files, None
+        ordered.append(path)
+    return (ordered or files), None
+
+
 def scan_project_targets(
     project_path: Path,
     *,
     svg_files: list[Path] | None = None,
     include_hidden: bool = False,
 ) -> tuple[dict[str, list[GroupTarget]], list[str]]:
-    """Scan selected SVG files, defaulting to ``svg_output/*.svg``."""
+    """Scan selected SVG files, defaulting to the project's slide roster."""
     targets_by_slide: dict[str, list[GroupTarget]] = {}
     anonymous_groups: list[str] = []
     if svg_files is None:
-        svg_dir = project_path / 'svg_output'
-        if not svg_dir.is_dir():
-            return targets_by_slide, [f'svg_output directory not found: {svg_dir}']
-        svg_files = discover_slide_svgs(svg_dir)
+        svg_files, error = resolve_slide_svg_files(project_path)
+        if error is not None:
+            return targets_by_slide, [error]
 
     for svg_path in svg_files:
         targets, anonymous = scan_svg_targets(svg_path, include_hidden=include_hidden)
@@ -1633,8 +1741,7 @@ def validate_animation_config(
     if morph_pairs:
         scan_files = svg_files
         if scan_files is None:
-            svg_dir = project_path / 'svg_output'
-            scan_files = discover_slide_svgs(svg_dir) if svg_dir.is_dir() else []
+            scan_files, _error = resolve_slide_svg_files(project_path)
         for svg_path in scan_files:
             root_primitives_by_slide[svg_path.stem] = scan_root_primitives(svg_path)
     for pair in morph_pairs:
@@ -1667,7 +1774,40 @@ def validate_animation_config(
                     'animations.json Morph references structural group: '
                     f'{slide_name}/{group_id}'
                 )
+            elif (
+                target.placeholder is not None
+                and target.on_structured_page
+                and _lock_structure_mode(project_path) != 'flat'
+            ):
+                warnings.append(
+                    f'animations.json Morph endpoint {slide_name}/{group_id} '
+                    f'is the placeholder slot {target.placeholder!r}: structured '
+                    'export rewrites a slot into a layout placeholder, so it '
+                    'cannot carry a Morph name; pair a Slide-local group instead'
+                )
     return list(dict.fromkeys(warnings))
+
+
+def _lock_structure_mode(project_path: Path) -> str | None:
+    """Return ``spec_lock.md``'s ``pptx_structure.mode``, or None without one."""
+    lock_path = project_path / 'spec_lock.md'
+    try:
+        text = lock_path.read_text(encoding='utf-8-sig')
+    except OSError:
+        return None
+    section = re.search(
+        r'^##[ \t]+pptx_structure[ \t]*$(?P<body>.*?)(?=^##[ \t]|\Z)',
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if section is None:
+        return None
+    mode = re.search(
+        r'^-[ \t]+mode[ \t]*:[ \t]*([A-Za-z_-]+)',
+        section.group('body'),
+        flags=re.MULTILINE,
+    )
+    return mode.group(1).lower() if mode else None
 
 
 def build_scaffold(project_path: Path) -> dict[str, Any]:

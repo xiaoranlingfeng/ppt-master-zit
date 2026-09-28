@@ -36,6 +36,54 @@ def _empty_result() -> dict:
     return {'errors': [], 'warnings': []}
 
 
+class LeadingInlineRunParagraphTests(unittest.TestCase):
+    def test_first_line_opening_with_an_inline_run_is_a_paragraph(self) -> None:
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">'
+            '<text x="460" y="318" font-size="18">'
+            '<tspan font-weight="bold">Trigger</tspan> — already chronically absent'
+            '<tspan x="460" dy="26"><tspan font-weight="bold">Action</tspan> — case review</tspan>'
+            '<tspan x="460" dy="26"><tspan font-weight="bold">Owner</tspan> — coordinator</tspan>'
+            '</text></svg>'
+        )
+        root = ET.fromstring(svg)
+        text_el = next(iter(root))
+        classified = checker_module._classify_paragraph_block(text_el, preserve_line_breaks=True)
+        self.assertIsNotNone(classified)
+        _base, _extras, _breaks, line_groups, synthetic_first = classified
+        self.assertEqual(len(line_groups), 3)
+        self.assertIsNotNone(synthetic_first)
+
+
+class TextPictureFillReferenceTests(unittest.TestCase):
+    def test_text_picture_fill_pattern_image_counts_as_a_rendered_reference(self) -> None:
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">'
+            '<defs>'
+            '<pattern id="titleTexture" data-pptx-text-image-fill="stretch" '
+            'patternUnits="objectBoundingBox" patternContentUnits="objectBoundingBox" '
+            'width="1" height="1">'
+            '<image href="../images/title_fill.png" x="0" y="0" width="1" height="1" '
+            'preserveAspectRatio="none"/></pattern>'
+            '<pattern id="unused" data-pptx-text-image-fill="stretch" '
+            'patternUnits="objectBoundingBox" width="1" height="1">'
+            '<image href="../images/unused.png" width="1" height="1"/></pattern>'
+            '</defs>'
+            '<text x="80" y="200" font-size="96" fill="url(#titleTexture)">Title</text>'
+            '</svg>'
+        )
+        root = ET.fromstring(svg)
+        images = SVGQualityChecker._text_image_fill_images(root)
+        self.assertEqual(
+            [image.get('href') for image in images],
+            ['../images/title_fill.png'],
+        )
+        # The generic visible-image scan still ignores <defs>, so the
+        # pattern image is a placement only through the text fill path.
+        _root, _parents, visible = SVGQualityChecker._visible_image_elements(root)
+        self.assertEqual(visible, [])
+
+
 class SVGQualityCheckerBoundsTests(unittest.TestCase):
     @staticmethod
     def _text_bounds(root: ET.Element, *, include_headroom: bool = False) -> tuple:

@@ -8,7 +8,7 @@ Tool behavior behind [`create-template.md`](../../workflows/create-template.md) 
 python3 skills/ppt-master/scripts/pptx_template_import.py "<reference_template.pptx>" [--inheritance-mode layered|both|flat]
 ```
 
-Produces one import workspace (typically under `/tmp/pptx_template_import/`; an analysis intermediate, never a final template):
+Produces one import workspace (default `<pptx_stem>_template_import/` beside the source file; pass `-o` to place it elsewhere; an analysis intermediate, never a final template):
 
 | Output | Content |
 |---|---|
@@ -30,6 +30,45 @@ Produces one import workspace (typically under `/tmp/pptx_template_import/`; an 
 
 **Artifact roles**: `analysis/manifest.json` is the truth for source-deck facts (slide size, theme, fonts, background inheritance, resource inventory, declared structure, reuse relationships); `analysis/native_structure.json` for source PowerPoint identity (keys, picker names, parents, placeholder types/indices, package hash); `svg/inheritance.json` for consumption and visibility. The three overlap only at contract boundaries so materialization can cross-check identity, ownership, and visibility — never collapse or substitute them. `authoring_summary.json` is the model-facing roster index; `authoring_manifest.json` is machine-only provenance validated by the mirror compiler. Exported `images/` is the canonical reusable image pool; `icons/imported/*.svg` is the canonical decoration pool but not part of the default read set — use `authoring_summary.json` `icon_refs` and cleaned SVGs first, query `*_vector_asset_inventory.json` by exact asset id only when source-ref or fingerprint detail is needed, and open an individual asset only when it affects a design decision.
 
+## Mirror publication
+
+Type A mirror is a tool publication path. Run these commands serially on the
+importer's unchanged output:
+
+```bash
+python3 skills/ppt-master/scripts/pptx_template_import.py "<source.pptx>" -o "<import_workspace>" --inheritance-mode both
+python3 skills/ppt-master/scripts/mirror_template_materialize.py "<import_workspace>" "<template_workspace>" [--kind deck|layout]
+python3 skills/ppt-master/scripts/svg_quality_checker.py "<template_workspace>/templates" --template-mode --canonical-authoring
+python3 skills/ppt-master/scripts/template_preview_pptx.py "<template_workspace>" -o "<preview.pptx>"
+```
+
+Only `pptx_template_import.py` workspaces with layered IR,
+`analysis/native_structure.json`, and `sources/source.pptx` qualify. A generic
+SVG workspace is consumed through `apply_template.py` with its exact root.
+Do not relabel a generic projection or fabricate source facts.
+
+The materializer writes the Design Spec skeleton in the same publication
+transaction. It defaults to Deck because its factual roster is one prototype
+per source slide; `--kind layout` records a previously chosen neutral Layout
+target. The default skeleton is necessary for the next checker/preview commands,
+so it needs no separate enable flag. A workspace whose resolved path lies under
+`skills/ppt-master/templates/<kind_dir>/` uses `templates/design_spec.md`;
+every other workspace uses `templates/design_spec.<kind>.TODO.md`, including an
+empty project workspace. The `spec_skeleton` receipt records that path. It
+records exact canvas dimensions/viewBox (`custom` if no registered size matches),
+source page count, Master/Layout keys, picker names, text slots and a Source
+Preservation Map. The identity and Overview/Color Scheme/Typography/other design
+sections remain TODOs. Registration rejects the unfinished skeleton with an
+actionable message; Template_Designer completes its judgment before registering.
+
+The execution manifest records the source package hash, whether every reachable
+import document still matches its importer hash, and hashes of published SVGs
+and their native records/assets. Template-mode checks classify only unchanged source text-bound estimates
+and source-object overlaps as inherited information. Edited import documents, SVGs or packaged dependencies invalidate that classification; XML, images, native payloads and reusable structure remain blocking.
+This is source preservation, not proof that every original slide fits. The
+checker and preview do not require completed design prose. Detailed source
+validation, asset packaging and rollback: [svg-pipeline.md](svg-pipeline.md#mirror_template_materializepy).
+
 ## Type B source bundles
 
 ```bash
@@ -47,13 +86,39 @@ python3 skills/ppt-master/scripts/svg_quality_checker.py "<template_source>" --t
 
 Globs `*.svg` in the template directory; skips `spec_lock.md` drift checks; enforces roster ↔ resolved Design Spec consistency as errors (orphan or missing files break the contract and, in library scope, the index); emits advisory warnings when a page lacks a conventional placeholder (silence them with a `placeholders:` frontmatter map); requires every SVG root to declare one output Master and Layout (zero-slot Layouts are valid); rejects ordinary Master/Layout `<g>` elements, nested structure markers, missing slot bounds, and carrier-bound slots without exactly one compatible carrier (a validated compact authored-preset `<g>` is the sole fixed-layer group exception and may be one `object` carrier); validates cross-page Master equality and same-key Layout atom/slot equality; warns when distinct Layout keys have identical static framing/slot contracts. For `kind: brand` it validates the identity-only frontmatter/sections/colors/provenance/asset references; for `kind: style` the frontmatter, section/field shape, conditional custom and fallback values, portable ID, and one-file roster-free boundary. It validates the authoring contract, not the compiled OOXML package.
 
+### Advisory slot capacity
+
+```bash
+python3 scripts/svg_quality_checker.py "<template_workspace_or_svg>" --template-mode --slot-capacity-report
+```
+
+This read-only mode prints JSON to stdout and creates no report or workflow log.
+It does not run the quality gate or add errors/warnings. Use it during Create
+Template review and before the Strategist locks typography. Each text carrier
+reports its slot bounds, inherited font family/size/weight/tracking, line pitch
+and representative Latin/CJK capacities measured with `text_measure.measure_text`
+(including its calibration/headroom). Latin uses a stated letter sample; CJK uses
+a full-width glyph. Actual text must still be measured. Line pitch comes from
+declared `line-height`, explicit tspan baselines, or a clearly labeled 1.2em
+estimate. If visible text uses tspans, it reads the first visible run and reports
+mixed family/size variants separately. The estimate assumes uniform carrier typography and does not promise
+a fixed capacity across fonts, mixed runs, languages or wrapping choices.
+It also reports `baseline_allowed: [top + 0.85 * size, bottom - 0.35 * size]`
+and the current `baseline` (plus `baselines` for multiple lines). Template-mode
+validation applies the existing vertical overflow severity to placeholder
+carriers even when their text is a `{{...}}` marker; marker length has no content-width contract.
+Mirror workspaces also read `template_execution/<prototype>.text-slots.json`:
+each selector produces a `source: mirror-text-slot` row using the source text
+frame or measured geometry and effective typography. Empty results include a
+`note`. Invalid bounds are reported as unavailable data, never as checker findings.
+
 ## `template_preview_pptx.py`
 
 ```bash
 python3 skills/ppt-master/scripts/template_preview_pptx.py "<authoring_workspace>" [--force] [--native-charts-and-tables -o <distinct_path>]
 ```
 
-Consumes `templates/*.svg` directly, compiles the declared structured Master/Layout contract into `<authoring_workspace>/exports/<template_id>_template_preview.pptx` (creating `exports/` on demand), and reopens the result to verify one slide per prototype, the expected Master/Layout counts, exact Presentation → Master → Layout → Slide registration, distinct Theme parts per Master, valid unique `p14:creationId` and registration IDs, and — for `standard` / `fidelity` — that every carrier-bound placeholder on each review Slide has the same type, effective index, and full frame as its registered Layout placeholder. Authored modes use ephemeral SVG copies with concise preview-only sample text so long `{{...}}` markers stay readable; source SVGs, carrier typography, slot metadata, and Layout frames are unchanged. The default review keeps visible Chart/Table fallbacks; `--native-charts-and-tables -o <distinct_path>` writes a separately named JSON-first review. The first export refuses an existing output; `--force` replaces it intentionally. It needs no project `spec_lock.md`, creates no persistent project, and never infers structure.
+Consumes `templates/*.svg` directly, compiles the declared structured Master/Layout contract into `<authoring_workspace>/exports/<template_id>_template_preview.pptx` (creating `exports/` on demand), and reopens the result to verify one slide per prototype, the expected Master/Layout counts, exact Presentation → Master → Layout → Slide registration, distinct Theme parts per Master, valid unique `p14:creationId` and registration IDs, and — for `standard` / `fidelity` — that every carrier-bound placeholder on each review Slide has the same type, effective index, and full frame as its registered Layout placeholder. Authored modes use ephemeral SVG copies with concise preview-only sample text so long `{{...}}` markers stay readable; source SVGs, carrier typography, slot metadata, and Layout frames are unchanged. Typed chart/table placeholders automatically enable native Chart/Table compilation, with the triggering slot kinds printed in the receipt. Without typed slots, the default keeps visible fallbacks; `--native-charts-and-tables -o <distinct_path>` explicitly requests a separately named native review. The first export refuses an existing output; `--force` replaces it intentionally. It needs no project `spec_lock.md`, creates no persistent project, and never infers structure.
 
 ## `apply_template.py`
 
@@ -61,7 +126,11 @@ Consumes `templates/*.svg` directly, compiles the declared structured Master/Lay
 python3 skills/ppt-master/scripts/apply_template.py <project_path> --root <workspace_root> [--root <workspace_root> ...] [--dry-run] [--skip-validation]
 ```
 
-Runs the install half of [`apply-template-workspace.md`](../../workflows/stages/apply-template-workspace.md) §4 for the roots Stage 1 (Default) or the user (Quick) already selected; it selects nothing. Each `--root` is a workspace root exposing `templates/design_spec.md` (library shape) or one `templates/design_spec.<kind>.<id>.md` per kind (project shape); an inner `templates/` directory is refused so sibling `images/` and `icons/` travel with the spec. Per root it runs `svg_quality_checker.py <root>/templates --template-mode --canonical-authoring` (`--skip-validation` when that already ran in the same turn), labels the root `library` when it resolves to the index-derived `templates/<kind_dir>/<id>/` and `explicit` otherwise, and rejects a Style-only library package that carries `images/`, `icons/`, or `exports/`. It then resolves the structural owner (Layout when selected, otherwise Deck), maps every spec to `<project>/templates/design_spec.<kind>.<id>.md` with exactly one `> **Installed from**: \`<root>\` (library|explicit)` line under the H1, maps the owner's `templates/` roster and other non-bitmap structural files and every root's `images/` / `icons/` once, and refuses duplicate kinds, a root passed twice, and any destination that already exists with different bytes — all before writing; a byte-identical destination is reported as `[same]`, so a rerun is a no-op. A root equal to the target project is consumed in place; when a selected Layout supersedes that project's in-place Deck roster, the Deck's structural files are removed and the Layout roster written in the same run. `--dry-run` prints the mapping and receipt without writing. The last stdout line is the §5.3 completion receipt (`roots=…; sources=…; kinds=…; segments=…; active_roster=…; install=…; installed_specs=…`).
+Runs the install half of [`apply-template-workspace.md`](../../workflows/stages/apply-template-workspace.md) §4 for the roots Stage 1 (Default) or the user (Quick) already selected; it selects nothing. Each `--root` is a workspace root exposing `templates/design_spec.md` (library shape) or one `templates/design_spec.<kind>.<id>.md` per kind (project shape); an inner `templates/` directory is refused so sibling `images/` and `icons/` travel with the spec. Per root it runs `svg_quality_checker.py <root>/templates --template-mode --canonical-authoring` (`--skip-validation` when that already ran in the same turn), labels the root `library` when it resolves to the index-derived `templates/<kind_dir>/<id>/` and `explicit` otherwise, and rejects a Style-only library package that carries `images/`, `icons/`, or `exports/`. It then resolves the structural owner (Layout when selected, otherwise Deck), maps every spec to `<project>/templates/design_spec.<kind>.<id>.md` with exactly one `> **Installed from**: \`<root>\` (library|explicit)` line under the H1, maps the owner's `templates/` roster and other non-bitmap structural files and every root's `images/` / `icons/` once, and refuses duplicate kinds, a root passed twice, and any destination that already exists with different bytes — all before writing; a byte-identical destination is reported as `[same]`, preserving content on reruns. A root equal to the target project is consumed in place; when a selected Layout supersedes that project's in-place Deck roster, the Deck's structural files are replaced by the Layout roster. `--dry-run` prints the mapping and receipt without writing. The last stdout line is the §5.3 completion receipt (`roots=…; sources=…; kinds=…; segments=…; active_roster=…; install=…; installed_specs=…`).
+
+The installer stages complete `templates/`, `images/`, and `icons/` trees on the target filesystem, verifies every mapped file and the final spec/roster/asset set, then publishes by directory rename. A publication failure rolls back all earlier renames, including removed Deck files and any previous receipt. If rollback itself fails, the error identifies retained backups for recovery. This is exception rollback across directories, not a single filesystem transaction or a process-crash recovery protocol.
+
+Successful installation also writes `<project>/template_install.json` in that transaction. Its version-1 object records `project`, `roots` (canonical roots, source labels, kinds, spec paths/identities, and source SHA-256 fingerprints), `installed_specs`, `active_roster` (root, kind, and structural file paths, or `null`), and `files` (installed relative paths → SHA-256). A spec's source and installed fingerprints differ by design because installation inserts one provenance line under its H1. `selection_sha256` binds a UI installation to its frozen Stage-1 snapshot; it is `null` for installations without a UI selection. If `confirm_ui/template_selection.json` exists, the supplied roots and their bytes must match it before installation. Confirm UI checks this machine receipt and installed content before exposing or accepting Stage 2; a textual provenance line is insufficient.
 
 ## `register_template.py`
 

@@ -17,9 +17,11 @@ import base64
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import tempfile
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from html import unescape
@@ -57,6 +59,7 @@ from svg_to_pptx.animation_config import (
     validate_animation_config_errors,
     validate_transition_config,
 )
+from svg_to_pptx.pptx_package.narration import narration_audio_parts
 from template_import.manifest import (
     count_drawable_shapes,
     extract_placeholders,
@@ -1452,7 +1455,7 @@ def _write_artifact_tree(
             _collect_media(art.media_files)
 
     _write_animation_config(output_dir, result)
-    _write_speaker_notes(output_dir, result)
+    _write_speaker_notes(output_dir, result, write_total=not options.roundtrip)
     if result.native_structure is not None:
         if result.source_pptx_path is None:
             raise RuntimeError(
@@ -1565,7 +1568,12 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _write_speaker_notes(output_dir: Path, result: ConvertResult) -> None:
+def _write_speaker_notes(
+    output_dir: Path,
+    result: ConvertResult,
+    *,
+    write_total: bool = True,
+) -> None:
     """Write imported notes into the standard per-slide Markdown contract."""
     if not result.speaker_notes:
         return
@@ -1581,6 +1589,10 @@ def _write_speaker_notes(output_dir: Path, result: ConvertResult) -> None:
             "",
             note.markdown.strip(),
         ])
+    if not write_total:
+        # Round-trip notes are keyed by output stem; the Generate-only
+        # total.md would only pose as a second source of truth.
+        return
     (notes_dir / "total.md").write_text(
         "\n".join(combined).rstrip() + "\n",
         encoding="utf-8",
@@ -1648,6 +1660,15 @@ def _write_roundtrip_manifest(
         and item.get("packagePart")
     }
     slides: list[dict[str, object]] = []
+    narration_by_index: dict[int, str | None] = {}
+    with zipfile.ZipFile(source_path) as archive:
+        for index, native_slide in native_by_index.items():
+            part = str(native_slide["packagePart"])
+            rels_part = posixpath.join(posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels")
+            parts = narration_audio_parts(archive.read(part), archive.read(rels_part), part)
+            narration_by_index[index] = (
+                result.resource_inventory.path_map().get(parts[0]) if len(parts) == 1 else None
+            )
     for slide in result.slides:
         layered_path = ROUNDTRIP_LAYERED_SVG_DIR / f"slide_{slide.index:02d}.svg"
         native_slide = native_by_index.get(slide.index, {})
@@ -1662,6 +1683,7 @@ def _write_roundtrip_manifest(
                 result.animation_config,
                 f"slide_{slide.index:02d}",
             ),
+            "narrationAudio": narration_by_index.get(slide.index),
         }
         referenced_svg_paths = [output_dir / layered_path]
         if slide.index in flat_by_index:
@@ -1712,15 +1734,9 @@ def _write_roundtrip_manifest(
             "animations": {
                 "file": "animations.json",
                 "sha256": _sha256_file(animation_path),
+                "baseline": result.animation_config,
             },
-            "notesTotal": (
-                {
-                    "file": "notes/total.md",
-                    "sha256": _sha256_file(output_dir / "notes/total.md"),
-                }
-                if result.speaker_notes
-                else None
-            ),
+            "notesTotal": None,
         },
         "directories": {
             "authoringSvg": AUTHORING_SVG_FLAT_DIR.as_posix(),
@@ -1815,7 +1831,11 @@ def _write_conversion_report(
         "notes": [
             (Path("notes") / note.filename).as_posix()
             for note in result.speaker_notes
-        ] + (["notes/total.md"] if result.speaker_notes else []),
+        ] + (
+            ["notes/total.md"]
+            if result.speaker_notes and not options.roundtrip
+            else []
+        ),
     }
     if embedded_font_paths:
         artifacts["embeddedFontManifest"] = embedded_font_paths[-1]

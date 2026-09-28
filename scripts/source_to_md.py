@@ -108,6 +108,11 @@ def _dispatch_output_arg(
         # directory: `-o sources_cf` writes `sources_cf.md` (a directory is
         # spelled with a trailing separator or already exists).
         if not Path(output_arg).suffix:
+            _print_status(
+                f"[INFO] -o names the Markdown file for a single input: writing "
+                f"{output_arg}.md (spell a directory with a trailing separator, "
+                "or create it first)"
+            )
             return f"{output_arg}.md"
         return output_arg
     return None
@@ -193,10 +198,11 @@ def write_passthrough(
         warnings=warnings,
     )
     for warning in warnings:
-        print(f"[INFO] {warning}")
+        _print_status(f"[INFO] {warning}")
     _print_status(f"[OK] Saved Markdown to: {output}")
     _print_status(f"   Wrote conversion profile -> {profile}")
-    print_output(output)
+    if not json_output:
+        print_output(output)
     if json_output:
         payload = build_result_payload(
             input_path=input_arg,
@@ -334,7 +340,8 @@ def dispatch_single(
             emit_result.unlink(missing_ok=True)
         if output_path and output_path.is_file():
             profile = ensure_profile(input_arg, output_path, route.script_name, "web")
-            print_output(output_path)
+            if not args.json:
+                print_output(output_path)
             if args.json:
                 print_json_result(input_arg, output_path, route.script_name, "web", profile)
             return 0
@@ -377,7 +384,8 @@ def dispatch_single(
         return 1
 
     profile = ensure_profile(input_arg, output, route.script_name, conversion_type)
-    print_output(output)
+    if not args.json:
+        print_output(output)
     if args.json:
         print_json_result(input_arg, output, route.script_name, conversion_type, profile)
     return 0

@@ -36,6 +36,7 @@ from resource_paths import icon_dir_for_project
 from svg_authoring_view import (
     SEMANTIC_OBJECT_ATTRIBUTE,
     SEMANTIC_SHAPE_KIND,
+    semantic_shape_text_component,
 )
 from svg_compatibility import normalize_single_child_group_filters
 
@@ -94,6 +95,7 @@ from .styles import (
 )
 from .elements import (
     complete_preset_adjustments,
+    shape_display_name,
     empty_clip_path_reason,
     convert_rect, convert_circle, convert_ellipse,
     convert_line, convert_path,
@@ -103,7 +105,12 @@ from .elements import (
     project_image_errors,
     project_nested_svg_crop_errors,
 )
-from ..animation_config import is_chrome_id, usable_animation_group_id
+from ..animation_config import (
+    anchor_wrapped_group,
+    effective_top_level,
+    is_chrome_id,
+    usable_animation_group_id,
+)
 from ..canvas_contract import (
     CanvasContractError,
     parse_project_svg_root,
@@ -745,33 +752,20 @@ def _semantic_shape_text_body(
     shape: ET.Element,
     ctx: ConvertContext,
 ) -> str | None:
-    texts = [
-        child
-        for child in shape
-        if child.tag.replace(f'{{{SVG_NS}}}', '') == 'text'
-    ]
-    nested_texts = [
-        child
-        for child in shape.iter()
-        if child.tag.replace(f'{{{SVG_NS}}}', '') == 'text'
-    ]
-    if nested_texts != texts:
-        raise SvgNativeConversionError(
-            'Semantic shape text must be one direct SVG text component'
-        )
-    if not texts:
+    metadata = _txbody_metadata(shape)
+    if metadata is not None:
+        preserved = _decode_unchanged_txbody(shape, metadata)
+        if preserved is not None:
+            return preserved[0]
+    try:
+        component = semantic_shape_text_component(shape)
+    except ValueError as exc:
+        raise SvgNativeConversionError(str(exc)) from exc
+    if component is None:
         return None
-    if len(texts) != 1:
-        raise SvgNativeConversionError(
-            'Semantic shape requires at most one paragraph-based text component'
-        )
     frame = shape.get('data-pptx-frame')
-    if frame is None:
-        raise SvgNativeConversionError(
-            'Semantic shape text requires data-pptx-frame on its owner'
-        )
 
-    text = copy.deepcopy(texts[0])
+    text = copy.deepcopy(component)
     text.set('data-pptx-frame', frame)
     for name in (
         'data-pptx-shape-id',
@@ -828,9 +822,16 @@ def _convert_semantic_shape(
         'data-pptx-shape-name',
         'data-pptx-shape-scope',
         'data-name',
+        'data-ph-type',
+        'data-pptx-placeholder-index',
+        'data-pptx-placeholder-size',
+        'data-pptx-placeholder-orientation',
     ):
         if carrier.get(name) is None and shape.get(name) is not None:
             carrier.set(name, str(shape.get(name)))
+    if carrier.get('data-name') is None and shape.get('id'):
+        # The carrier path becomes the native object; keep the group's name.
+        carrier.set('data-name', str(shape.get('id')))
 
     if shape.get('data-pptx-geometry-kind') == 'custom':
         for name in (
@@ -1444,7 +1445,7 @@ def convert_g(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None:
 
     return ShapeResult(xml=f'''<p:grpSp>
 <p:nvGrpSpPr>
-<p:cNvPr id="{group_id}" name="Group {group_id}"/>
+<p:cNvPr id="{group_id}" name="{_xml_escape(shape_display_name(elem, f'Group {group_id}'))}"/>
 <p:cNvGrpSpPr/>
 <p:nvPr/>
 </p:nvGrpSpPr>
@@ -1463,7 +1464,11 @@ def convert_g(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None:
 
 def convert_a(elem: ET.Element, ctx: ConvertContext) -> ShapeResult | None:
     """Convert one standard SVG anchor into a clickable DrawingML object."""
-    result = convert_g(elem, ctx)
+    # A bare anchor around one <g> is transparent: the group converts at the
+    # anchor's own depth, so a top-level <a href><g id> stays an animation
+    # anchor, and the click lands on its leaves.
+    wrapped = anchor_wrapped_group(elem)
+    result = convert_g(wrapped if wrapped is not None else elem, ctx)
     if result is None:
         return None
     return apply_shape_hyperlink(result, ctx, svg_hyperlink_href(elem))
@@ -1596,6 +1601,11 @@ def _extract_background_candidate(
         if tag != 'g':
             return '', None
         if child.get('transform') or child.get('filter') or child.get('clip-path'):
+            return '', None
+        if child.get('data-pptx-shape-id') is not None:
+            # A source-identified object (including the round-trip
+            # native-restore placeholder for an unchanged full-canvas picture)
+            # must stay a shape so its native original can take its place.
             return '', None
         style_overrides = _extract_inheritable_styles(child)
         local_opacity = get_element_opacity(child)
@@ -2371,12 +2381,11 @@ def convert_svg_to_slide_shapes(
         text_font_sizes=text_font_sizes,
         text_letter_spacings=text_letter_spacings,
     )
-
     shapes: list[str] = []
     converted = 0
     skipped = 0
     has_top_level_group = any(
-        child.tag.replace(f'{{{SVG_NS}}}', '') == 'g'
+        effective_top_level(child).tag.replace(f'{{{SVG_NS}}}', '') == 'g'
         for child in root
     )
     background_xml, background_skip_id = (
@@ -2409,11 +2418,12 @@ def convert_svg_to_slide_shapes(
             shapes.append(result.xml)
             converted += 1
             m = re.search(r'<p:cNvPr id="(\d+)"', result.xml)
-            elem_id = child.get('id')
-            role = child.get('data-pptx-role')
-            placeholder = child.get('data-pptx-placeholder')
+            unit = effective_top_level(child)
+            elem_id = unit.get('id')
+            role = unit.get('data-pptx-role')
+            placeholder = unit.get('data-pptx-placeholder')
             has_explicit_semantics = role is not None or placeholder is not None
-            structurally_static = child.get('data-pptx-layer') is not None
+            structurally_static = unit.get('data-pptx-layer') is not None
             legacy_chrome = (
                 is_static_page_frame(role, placeholder)
                 if has_explicit_semantics

@@ -20,7 +20,7 @@
     "skills/ppt-master/SKILL.md": 2500,
     "skills/ppt-master/references/executor-base.md": 12000,
     "skills/ppt-master/references/executor-structured.md": 5500,
-    "skills/ppt-master/references/executor-chart.md": 1750,
+    "skills/ppt-master/references/executor-chart.md": 2000,
     "skills/ppt-master/references/executor-visualization.md": 1000,
     "skills/ppt-master/references/executor-structure.md": 1750,
     "skills/ppt-master/references/topology-assembly.md": 3750,
@@ -65,7 +65,7 @@
     "skills/ppt-master/workflows/stages/generate-audio.md": 4000,
     "skills/ppt-master/workflows/profiles/beautify-pptx.md": 5000,
     "skills/ppt-master/workflows/profiles/image-to-pptx.md": 3250,
-    "skills/ppt-master/workflows/edit-native-pptx.md": 4250,
+    "skills/ppt-master/workflows/edit-native-pptx.md": 4500,
     "skills/ppt-master/workflows/create-template.md": 10000,
     "skills/ppt-master/references/template-designer.md": 7000,
     "skills/ppt-master/workflows/create-template/create-brand.md": 1500,
@@ -1507,7 +1507,7 @@
       },
       {
         "kind": "exact",
-        "fingerprint": "092a8a1f88e9",
+        "fingerprint": "730b04759324",
         "paths": [
           "skills/ppt-master/SPONSORS.md",
           "skills/ppt-master/SPONSORS_CN.md"
@@ -2133,7 +2133,7 @@
             {
               "path": "skills/ppt-master/references/pptx-structure-interface.md",
               "role": "reference",
-              "fingerprint": "9cef05268f4f",
+              "fingerprint": "39cbcc1365b7",
               "reason": "This reference mirrors the owner field grammar or ownership boundary."
             },
             {
@@ -2217,7 +2217,7 @@
             {
               "path": "skills/ppt-master/references/pptx-structure-interface.md",
               "role": "reference",
-              "fingerprint": "b10eddc66b34",
+              "fingerprint": "0cfaaa77ab86",
               "reason": "This reference mirrors the owner field grammar or ownership boundary."
             },
             {
@@ -2247,7 +2247,7 @@
             {
               "path": "skills/ppt-master/references/pptx-structure-interface.md",
               "role": "reference",
-              "fingerprint": "51fe75ceb256",
+              "fingerprint": "d43b6b9804a4",
               "reason": "This reference mirrors the owner field grammar or ownership boundary."
             },
             {
@@ -2302,6 +2302,20 @@
         "skills/ppt-master/workflows/*.md",
         "skills/ppt-master/workflows/**/*.md",
         "skills/ppt-master/templates/*.md"
+      ],
+      "accepted": [
+        {
+          "field": "image_ai_path",
+          "owner_fingerprint": "29f97cdb0797",
+          "projections": [
+            {
+              "path": "skills/ppt-master/references/confirm-surface.md",
+              "role": "reference",
+              "fingerprint": "dda9d2e6f1ee",
+              "reason": "result.json field list restates the owner grammar; stage1_sha256/selection_sha256 binding added by the template-flow audit."
+            }
+          ]
+        }
       ]
     }
   ],

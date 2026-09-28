@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from .utils import font_px_to_hpt, parse_font_family
+from language_tags import language_base, language_uses_rtl
+from slide_roster import discover_slide_svgs
+
+from .utils import _explicit_language_script, font_px_to_hpt, parse_font_family
 
 
 DML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -53,6 +56,10 @@ class ThemeFontSpec:
     minor: ThemeFontFace
     major_family: str
     minor_family: str
+    # Supplemental theme scripts (``Arab``, ``Hebr``, ``Thai``, ``Deva``, ...)
+    # the deck's primary language writes in; they take the locked
+    # complex-script face instead of the Office factory default.
+    cs_scripts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -147,8 +154,8 @@ def infer_master_text_style_spec(
     )
 
 
-def _font_face(font_family: str) -> ThemeFontFace:
-    fonts = parse_font_family(font_family)
+def _font_face(font_family: str, language: str | None = None) -> ThemeFontFace:
+    fonts = parse_font_family(font_family, language)
     return ThemeFontFace(
         latin=fonts["latin"],
         ea=fonts["ea"],
@@ -177,7 +184,10 @@ def _typography_rows(lock_path: Path) -> dict[str, str]:
     return rows
 
 
-def load_theme_font_spec(project_path: Path) -> ThemeFontSpec | None:
+def load_theme_font_spec(
+    project_path: Path,
+    language: str | None = None,
+) -> ThemeFontSpec | None:
     """Load major/minor theme fonts from ``spec_lock.md`` typography rows."""
     lock_path = project_path / "spec_lock.md"
     if not lock_path.is_file():
@@ -189,10 +199,56 @@ def load_theme_font_spec(project_path: Path) -> ThemeFontSpec | None:
     if not major_family or not minor_family:
         return None
     return ThemeFontSpec(
-        major=_font_face(major_family),
-        minor=_font_face(minor_family),
+        major=_font_face(major_family, language),
+        minor=_font_face(minor_family, language),
         major_family=major_family,
         minor_family=minor_family,
+        cs_scripts=_complex_theme_scripts(language),
+    )
+
+
+def load_theme_font_spec_from_pages(
+    project_path: Path,
+    language: str | None = None,
+) -> ThemeFontSpec | None:
+    """Derive major/minor theme fonts from the first svg_output page.
+
+    The page root's ``font-family`` is the minor (body) face; the family of
+    the largest text on the page is the major (title) face.
+    """
+    pages = discover_slide_svgs(project_path / "svg_output")
+    if not pages:
+        return None
+    try:
+        root = ET.parse(str(pages[0])).getroot()
+    except ET.ParseError:
+        return None
+    minor_family = root.get("font-family") or _inline_style_property(
+        root.get("style", ""), "font-family"
+    )
+    major_family = None
+    largest = -1.0
+    for element in root.iter():
+        if not isinstance(element.tag, str) or element.tag.split("}")[-1] != "text":
+            continue
+        size = _svg_font_size_px(element)
+        family = element.get("font-family") or _inline_style_property(
+            element.get("style", ""), "font-family"
+        )
+        if not minor_family and family:
+            minor_family = family
+        if size is not None and size > largest and family:
+            largest, major_family = size, family
+    minor_family = minor_family or major_family
+    major_family = major_family or minor_family
+    if not major_family or not minor_family:
+        return None
+    return ThemeFontSpec(
+        major=_font_face(major_family, language),
+        minor=_font_face(minor_family, language),
+        major_family=major_family,
+        minor_family=minor_family,
+        cs_scripts=_complex_theme_scripts(language),
     )
 
 
@@ -258,7 +314,36 @@ def theme_font_tokens(
     }
 
 
-def _patch_font_collection(collection: ET.Element, face: ThemeFontFace) -> None:
+# Theme ``<a:font script="...">`` codes by language base for scripts that
+# PowerPoint renders through the complex-script slot.
+_COMPLEX_SCRIPT_BY_LANGUAGE = {
+    "he": "Hebr", "yi": "Hebr",
+    "th": "Thai", "lo": "Laoo", "km": "Khmr", "my": "Mymr", "bo": "Tibt",
+    "hi": "Deva", "mr": "Deva", "ne": "Deva", "sa": "Deva", "kok": "Deva",
+    "bn": "Beng", "as": "Beng", "pa": "Guru", "gu": "Gujr", "or": "Orya",
+    "ta": "Taml", "te": "Telu", "kn": "Knda", "ml": "Mlym", "si": "Sinh",
+    "ka": "Geor", "hy": "Armn", "am": "Ethi", "ti": "Ethi",
+}
+
+
+def _complex_theme_scripts(language: str | None) -> tuple[str, ...]:
+    """Return the theme supplemental script(s) the primary language writes in."""
+    if not language:
+        return ()
+    script = _explicit_language_script(language)
+    if script:
+        return (script,)
+    base = language_base(language)
+    if base in _COMPLEX_SCRIPT_BY_LANGUAGE:
+        return (_COMPLEX_SCRIPT_BY_LANGUAGE[base],)
+    return ("Arab",) if language_uses_rtl(language) else ()
+
+
+def _patch_font_collection(
+    collection: ET.Element,
+    face: ThemeFontFace,
+    cs_scripts: tuple[str, ...] = (),
+) -> None:
     for tag, value in (("latin", face.latin), ("ea", face.ea), ("cs", face.cs)):
         elem = collection.find(f"{{{DML_NS}}}{tag}")
         if elem is None:
@@ -267,6 +352,8 @@ def _patch_font_collection(collection: ET.Element, face: ThemeFontFace) -> None:
     for supplemental in collection.findall(f"{{{DML_NS}}}font"):
         if supplemental.get("script") in _CJK_THEME_SCRIPTS:
             supplemental.set("typeface", face.ea)
+        elif supplemental.get("script") in cs_scripts:
+            supplemental.set("typeface", face.cs)
 
 
 def apply_theme_font_spec(extract_dir: Path, spec: ThemeFontSpec) -> None:
@@ -290,8 +377,8 @@ def apply_theme_font_spec(extract_dir: Path, spec: ThemeFontSpec) -> None:
         if major is None or minor is None:
             raise ThemeFontError(f"Theme has no major/minor font collection: {theme_path}")
         font_scheme.set("name", "PPT Master")
-        _patch_font_collection(major, spec.major)
-        _patch_font_collection(minor, spec.minor)
+        _patch_font_collection(major, spec.major, spec.cs_scripts)
+        _patch_font_collection(minor, spec.minor, spec.cs_scripts)
         tree.write(theme_path, encoding="utf-8", xml_declaration=True)
 
 

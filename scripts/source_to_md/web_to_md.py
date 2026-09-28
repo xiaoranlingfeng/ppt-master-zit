@@ -19,6 +19,12 @@ TLS fingerprint handling:
     'curl_cffi' is unavailable, it silently falls back to plain 'requests' — so
     non-blocking sites still work without the extra dependency.
 
+    Public-only requests pin validated addresses: curl_cffi uses CURLOPT_RESOLVE
+    while requests uses connection-local validation and numeric socket targets.
+    Both retain the URL hostname for TLS verification. Environment proxies are
+    disabled in this mode because a proxy could resolve the target again;
+    --allow-private-hosts restores proxy use and unrestricted address resolution.
+
     Install for WeChat / Chinese-portal coverage:
         pip install curl_cffi
 
@@ -36,19 +42,32 @@ import ipaddress
 import json
 import os
 import re
+import unicodedata
 import socket
+import subprocess
 import sys
 import time
+from email.message import Message
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+from urllib.request import Request
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from console_encoding import configure_utf8_stdio  # noqa: E402
+from _dispatcher import (  # noqa: E402
+    DOC_SUFFIXES,
+    EXCEL_SUFFIXES,
+    LEGACY_EXCEL_SUFFIXES,
+    PDF_SUFFIXES,
+    PRESENTATION_SUFFIXES,
+    build_conversion_command,
+)
 from _conversion_profile import (  # noqa: E402
     profile_path_for,
+    record_source_url,
     write_conversion_profile_best_effort,
 )
 
@@ -63,6 +82,7 @@ if not _HELP_REQUESTED:
     try:
         import requests
         from bs4 import BeautifulSoup, Comment, NavigableString, Tag
+        from urllib3.util import parse_url
     except ImportError:
         print("Error: This script requires 'requests' and 'beautifulsoup4'.", file=sys.stderr)
         print("Please run: pip install requests beautifulsoup4", file=sys.stderr)
@@ -71,9 +91,11 @@ if not _HELP_REQUESTED:
 # Prefer curl_cffi for TLS-fingerprint impersonation (bypasses JA3 blocking on
 # sites like WeChat). Fall back to plain requests when it's not installed.
 try:
+    from curl_cffi import CurlOpt  # type: ignore
     from curl_cffi import requests as curl_requests  # type: ignore
     _CURL_IMPERSONATE = "chrome120"
 except ImportError:
+    CurlOpt = None
     curl_requests = None
     _CURL_IMPERSONATE = None
 
@@ -82,15 +104,48 @@ class _UnsafeUrlError(ValueError):
     """Reject a URL that cannot be verified as a public HTTP(S) target."""
 
 
-def _validate_public_url(url: str) -> None:
-    """Reject non-HTTP(S) URLs and hosts resolving to non-public addresses."""
+_NON_PUBLIC_IPV4_NETWORKS = tuple(ipaddress.ip_network(network) for network in (
+    "0.0.0.0/8", "100.64.0.0/10", "240.0.0.0/4",
+))
+
+
+def _check_url_characters(url: str) -> None:
+    """Reject characters clients could strip or reinterpret before parsing."""
+    if "\\" in url or any(char.isspace() or unicodedata.category(char) == "Cc" for char in url):
+        raise _UnsafeUrlError("Refusing URL containing backslash, whitespace, or control characters")
+
+
+def _prepare_url(url: str) -> str:
+    """Return the client's URL only when both parsers agree on its hostname."""
+    _check_url_characters(url)
     try:
         parsed = urlparse(url)
-        hostname = parsed.hostname
-    except ValueError as exc:
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise _UnsafeUrlError("Only HTTP(S) URLs with a hostname are allowed")
+        prepared = requests.PreparedRequest()
+        prepared.prepare_url(url, None)
+        hostname = parse_url(prepared.url).host
+        # The raw hostname must survive preparation unchanged, so a host the
+        # client decodes differently (percent-encoded labels) is refused. An IDN
+        # host legitimately becomes punycode; compare its IDNA form. urllib3
+        # keeps IPv6 brackets; urlparse does not.
+        raw_host = parsed.hostname
+        if not raw_host.isascii():
+            try:
+                raw_host = raw_host.encode("idna").decode("ascii")
+            except UnicodeError as exc:
+                raise _UnsafeUrlError(f"Invalid internationalized hostname: {exc}") from exc
+        if not hostname or raw_host.lower() != hostname.strip("[]").lower():
+            raise _UnsafeUrlError("Refusing URL with inconsistent parsed hostnames")
+        return prepared.url
+    except (ValueError, requests.exceptions.RequestException) as exc:
+        if isinstance(exc, _UnsafeUrlError):
+            raise
         raise _UnsafeUrlError(f"Invalid URL: {exc}") from exc
-    if parsed.scheme not in {"http", "https"} or not hostname:
-        raise _UnsafeUrlError("Only HTTP(S) URLs with a hostname are allowed")
+
+
+def _resolve_public_addresses(hostname: str) -> list:
+    """Resolve once and validate every address before any socket is created."""
     try:
         addresses = [ipaddress.ip_address(hostname)]
     except ValueError:
@@ -104,14 +159,153 @@ def _validate_public_url(url: str) -> None:
     if not addresses:
         raise _UnsafeUrlError(f"Cannot resolve URL hostname {hostname}")
     if CONFIG["allow_private_hosts"]:
-        return
+        return addresses
     for address in addresses:
+        scoped = getattr(address, "scope_id", None)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
         if (address.is_loopback or address.is_link_local
-                or address.is_private or address.is_unspecified):
+                or address.is_private or address.is_unspecified
+                or address.is_multicast or address.is_reserved
+                or scoped
+                or any(address in network for network in _NON_PUBLIC_IPV4_NETWORKS)):
             raise _UnsafeUrlError(
                 f"Refusing non-public URL target: {hostname} resolves to {address} "
                 "(pass --allow-private-hosts for intranet or localhost pages)"
             )
+    return list(dict.fromkeys(addresses))
+
+
+def _validate_public_url(url: str) -> tuple[str, list]:
+    """Return the prepared URL and its validated addresses for transport use."""
+    prepared = _prepare_url(url)
+    hostname = parse_url(prepared).host.strip("[]")
+    return prepared, _resolve_public_addresses(hostname)
+
+
+class _PublicConnectionMixin:
+    """Keep urllib3's hostname/TLS handling but connect only to checked IPs."""
+
+    def _new_conn(self):
+        from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
+        from urllib3.util import Timeout
+
+        addresses = _resolve_public_addresses(self._dns_host)
+        error = None
+        for address in addresses:
+            sock = None
+            try:
+                family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                for option in self.socket_options or ():
+                    sock.setsockopt(*option)
+                if self.timeout is not Timeout.DEFAULT_TIMEOUT:
+                    sock.settimeout(self.timeout)
+                if self.source_address:
+                    sock.bind(self.source_address)
+                # Numeric addresses go straight to connect; no second DNS lookup.
+                sock.connect((str(address), self.port))
+                sys.audit("http.client.connect", self, self.host, self.port)
+                return sock
+            except OSError as exc:
+                error = exc
+                if sock is not None:
+                    sock.close()
+        if isinstance(error, socket.timeout):
+            raise ConnectTimeoutError(self, f"Connection to {self.host} timed out") from error
+        raise NewConnectionError(self, f"Failed to establish a new connection: {error}") from error
+
+
+def _public_http_adapter():
+    """Build isolated pools without patching requests or urllib3 globally."""
+    from urllib3.connection import HTTPConnection, HTTPSConnection
+    from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
+
+    class PublicHTTPConnection(_PublicConnectionMixin, HTTPConnection):
+        pass
+
+    class PublicHTTPSConnection(_PublicConnectionMixin, HTTPSConnection):
+        pass
+
+    class PublicHTTPConnectionPool(HTTPConnectionPool):
+        ConnectionCls = PublicHTTPConnection
+
+    class PublicHTTPSConnectionPool(HTTPSConnectionPool):
+        ConnectionCls = PublicHTTPSConnection
+
+    adapter = requests.adapters.HTTPAdapter()
+    adapter.poolmanager.pool_classes_by_scheme = {
+        "http": PublicHTTPConnectionPool,
+        "https": PublicHTTPSConnectionPool,
+    }
+    return adapter
+
+
+def _validate_response_redirect(response, **kwargs) -> None:
+    """Check requests redirects before its redirect engine sends the next hop."""
+    try:
+        response_url, _ = _validate_public_url(response.url)
+        if response.is_redirect:
+            # Match requests' decoding of the HTTP Location header.
+            location = response.headers["location"].encode("latin1").decode("utf8")
+            _check_url_characters(location)
+            next_url, _ = _validate_public_url(urljoin(response_url, location))
+            response.headers["location"] = next_url
+    except _UnsafeUrlError:
+        response.close()
+        raise
+
+
+def _curl_http_get(url: str, *, headers: dict | None, timeout: int | None,
+                   verify: bool, stream: bool):
+    """Pin each curl hop with CURLOPT_RESOLVE, retaining Chrome impersonation."""
+    cookies = requests.cookies.RequestsCookieJar()
+    headers = requests.structures.CaseInsensitiveDict(headers or {})
+    max_redirects = requests.models.DEFAULT_REDIRECT_LIMIT
+    for redirect_count in range(max_redirects + 1):
+        url, addresses = _validate_public_url(url)
+        curl_options = {}
+        if not CONFIG["allow_private_hosts"]:
+            target = parse_url(url)
+            port = target.port if target.port is not None else (443 if target.scheme == "https" else 80)
+            # IPv6 addresses need brackets in libcurl's host:port:address list.
+            pinned = ",".join(f"[{ip}]" if ip.version == 6 else str(ip) for ip in addresses)
+            curl_options = {CurlOpt.RESOLVE: [f"{target.host}:{port}:{pinned}"], CurlOpt.PROXY: ""}
+        response = curl_requests.get(
+            url, headers=headers, timeout=timeout, verify=verify,
+            impersonate=_CURL_IMPERSONATE, stream=stream,
+            allow_redirects=False, cookies=cookies, curl_options=curl_options, quote=False,
+        )
+        try:
+            _validate_public_url(response.url)
+        except _UnsafeUrlError:
+            response.close()
+            raise
+        if response.status_code not in (301, 302, 303, 307, 308):
+            return response
+        location = response.headers.get("Location")
+        if not location:
+            return response
+        try:
+            _check_url_characters(location)
+            next_url, _ = _validate_public_url(urljoin(response.url, location))
+            if redirect_count >= max_redirects:
+                raise requests.exceptions.TooManyRedirects(
+                    f"Exceeded {max_redirects} redirects.", response=response,
+                )
+            cookie_headers = Message()
+            for value in response.headers.get_list("Set-Cookie"):
+                cookie_headers.add_header("Set-Cookie", value)
+            cookies.extract_cookies(
+                requests.cookies.MockResponse(cookie_headers), Request(response.url),
+            )
+            if requests.Session().should_strip_auth(response.url, next_url):
+                headers = headers.copy()
+                for name in ("Authorization", "Cookie", "Host"):
+                    headers.pop(name, None)
+            url = next_url
+        finally:
+            response.close()
 
 
 def _http_get(url: str, *, headers: dict | None = None, timeout: int | None = None,
@@ -122,15 +316,21 @@ def _http_get(url: str, *, headers: dict | None = None, timeout: int | None = No
     TLS fingerprint (notably mp.weixin.qq.com). Signature mirrors the subset of
     requests.get() this script actually uses.
     """
-    _validate_public_url(url)
     if curl_requests is not None:
-        response = curl_requests.get(
-            url, headers=headers, timeout=timeout,
-            verify=verify, impersonate=_CURL_IMPERSONATE, stream=stream,
+        return _curl_http_get(
+            url, headers=headers, timeout=timeout, verify=verify, stream=stream,
         )
-    else:
-        response = requests.get(url, headers=headers, timeout=timeout,
-                                verify=verify, stream=stream)
+    url, _ = _validate_public_url(url)
+    with requests.Session() as session:
+        if not CONFIG["allow_private_hosts"]:
+            session.trust_env = False
+            adapter = _public_http_adapter()
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+        response = session.get(
+            url, headers=headers, timeout=timeout, verify=verify, stream=stream,
+            hooks={"response": _validate_response_redirect},
+        )
     try:
         _validate_public_url(response.url)
     except _UnsafeUrlError:
@@ -170,6 +370,37 @@ def _charset_from_html(raw: bytes) -> str:
         if match:
             return _normalize_charset(match.group(1).decode("ascii", "ignore"))
     return ""
+
+
+BODY_SHORTFALL_MIN_CHARS = 200
+BODY_SHORTFALL_RATIO = 0.25
+
+
+def _page_visible_text(soup) -> str:
+    """Return the page's rendered text with scripts, styles, and noscript removed."""
+    for node in soup(["script", "style", "noscript", "template"]):
+        node.decompose()
+    return re.sub(r"\s+", " ", soup.get_text(" ")).strip()
+
+
+def _body_shortfall_warning(markdown_text: str, page_text: str) -> str | None:
+    """Warn when the extracted body is a sliver of the text the page shows.
+
+    A content container that the extractor did not recognise yields a short,
+    plausible-looking Markdown file; comparing it against the page's visible
+    text turns that silent loss into a warning the caller can act on.
+    """
+    body_chars = len(re.sub(r"\s+", "", markdown_text))
+    page_chars = len(re.sub(r"\s+", "", page_text))
+    if body_chars >= BODY_SHORTFALL_MIN_CHARS or page_chars < BODY_SHORTFALL_MIN_CHARS * 2:
+        return None
+    if body_chars > page_chars * BODY_SHORTFALL_RATIO:
+        return None
+    return (
+        f"body extraction kept {body_chars} characters while the page shows "
+        f"{page_chars}; the content container was not recognised, so verify "
+        "the Markdown against the page before using it as a source"
+    )
 
 
 def _decode_quality_score(text: str) -> int:
@@ -225,6 +456,19 @@ def _decode_response_text(response) -> str:
         decoded.sort(key=lambda item: item[0])
         return decoded[0][2]
 
+    # Every strict decode failed: the page carries a few bad bytes. Keep the
+    # declared charset in the running instead of dropping to UTF-8, and let
+    # the artifact score pick the lossy decode that damages the least text.
+    lossy = []
+    for enc in declared + [enc for enc in candidates if enc not in declared]:
+        try:
+            text = raw.decode(enc, errors="replace")
+        except LookupError:
+            continue
+        lossy.append((_decode_quality_score(text), enc, text))
+    if lossy:
+        lossy.sort(key=lambda item: item[0])
+        return lossy[0][2]
     return raw.decode("utf-8", errors="replace")
 
 try:
@@ -272,15 +516,8 @@ CONFIG = {
 }
 
 
-def fetch_url(url: str) -> tuple[str, str]:
-    """Fetch a web page with explicit headers and encoding detection.
-
-    Args:
-        url: Target URL.
-
-    Returns:
-        The response body as text and the final URL after redirects.
-    """
+def fetch_response(url: str):
+    """Fetch a URL with explicit headers and return the raw HTTP response."""
     headers = {
         "User-Agent": CONFIG["user_agent"],
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -291,10 +528,15 @@ def fetch_url(url: str) -> tuple[str, str]:
         response = _http_get(url, headers=headers,
                              timeout=CONFIG["timeout"], verify=not CONFIG["insecure"])
         response.raise_for_status()
-
-        return _decode_response_text(response), response.url
+        return response
     except Exception as e:
         raise Exception(f"Failed to fetch {url}: {str(e)}")
+
+
+def fetch_url(url: str) -> tuple[str, str]:
+    """Fetch a web page as decoded text plus the final URL after redirects."""
+    response = fetch_response(url)
+    return _decode_response_text(response), response.url
 
 
 def clean_title(title: str) -> str:
@@ -306,12 +548,25 @@ def clean_title(title: str) -> str:
     return clean.strip()
 
 
+_FILENAME_TRANSLITERATIONS = str.maketrans({
+    'đ': 'd', 'Đ': 'D', 'ø': 'o', 'Ø': 'O', 'ł': 'l', 'Ł': 'L',
+    'ß': 'ss', 'æ': 'ae', 'Æ': 'AE', 'œ': 'oe', 'Œ': 'OE', 'ı': 'i',
+})
+
+
 def sanitize_filename(name: str) -> str:
-    """Sanitize a string for filesystem-safe filenames."""
+    """Sanitize a string for filesystem-safe filenames.
+
+    Accented Latin letters fold to their base letter (``Khát vọng`` ->
+    ``Khat_vong``) instead of vanishing; letters of any script and digits
+    stay, everything else is dropped.
+    """
+    folded = unicodedata.normalize('NFKD', name.translate(_FILENAME_TRANSLITERATIONS))
+    folded = ''.join(ch for ch in folded if not unicodedata.combining(ch))
     # Replace whitespace with underscore first
-    clean = re.sub(r'\s+', '_', name)
-    # Remove all except Chinese, English, Numbers, Underscore
-    clean = re.sub(r'[^\u4e00-\u9fa5a-zA-Z0-9_]', '', clean)
+    clean = re.sub(r'\s+', '_', folded)
+    # Keep letters and digits of any script, underscore, hyphen
+    clean = ''.join(ch for ch in clean if ch.isalnum() or ch in '_-')
     # Collapse repeating underscores
     clean = re.sub(r'_+', '_', clean)
     return clean[:80]  # Truncate
@@ -375,6 +630,7 @@ def resolve_content_image_url(img: Tag, page_url: str) -> str | None:
         src = value.strip()
         if not src or src.startswith(("data:", "javascript:", "blob:", "#")):
             continue
+        _check_url_characters(src)
         resolved = urljoin(page_url, src)
         parsed = urlparse(resolved)
         if parsed.scheme in {"http", "https"} and parsed.netloc:
@@ -579,11 +835,13 @@ def extract_metadata(soup: BeautifulSoup, url: str) -> dict[str, str]:
 
     if not date:
         # Try URL matching
-        match = re.search(r"(\d{4})(\d{2})[\/_](?:t\d+_)?", url)
+        # Only a plausible year and month: a handle or record number such as
+        # ".../10665/379812/..." is not May 3798.
+        match = re.search(r"(?<!\d)((?:19|20)\d{2})(0[1-9]|1[0-2])[\/_](?:t\d+_)?", url)
         if match:
             date = f"{match.group(1)}-{match.group(2)}"
         else:
-            match = re.search(r"(\d{4})[-\/](\d{2})[-\/](\d{2})", url)
+            match = re.search(r"(?<!\d)((?:19|20)\d{2})[-\/](0[1-9]|1[0-2])[-\/](\d{2})", url)
             if match:
                 date = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
 
@@ -780,6 +1038,44 @@ def simple_html_to_markdown_traversal(
     """Convert HTML content to Markdown using BeautifulSoup traversal."""
     lines = []
 
+    def fold(node: Tag) -> str:
+        """Convert a cell or caption like body text, folded onto one line."""
+        text = ''.join(traverse(child) for child in node.children)
+        return re.sub(r'\s+', ' ', text).strip().replace('|', '\\|')
+
+    def span(cell: Tag, name: str) -> int:
+        try:
+            return min(max(int(cell.get(name) or 1), 1), 50)
+        except ValueError:
+            return 1
+
+    def row_cells(row: Tag, carried: dict[int, int] | None = None) -> list[str]:
+        """Return one row's cells on the table grid.
+
+        A colspan pads empty cells to its right; ``carried`` maps a column to
+        the rows a rowspan above still covers, which take an empty cell here.
+        """
+        carried = {} if carried is None else carried
+        cells: list[str] = []
+
+        def fill_carried() -> None:
+            while carried.get(len(cells), 0) > 0:
+                carried[len(cells)] -= 1
+                cells.append('')
+
+        for cell in row.find_all(['td', 'th'], recursive=False):
+            fill_carried()
+            rowspan = span(cell, 'rowspan')
+            for offset in range(span(cell, 'colspan')):
+                if rowspan > 1:
+                    carried[len(cells)] = rowspan - 1
+                cells.append(fold(cell) if offset == 0 else '')
+        while any(count > 0 for column, count in carried.items() if column >= len(cells)):
+            if carried.get(len(cells), 0) > 0:
+                carried[len(cells)] -= 1
+            cells.append('')
+        return cells
+
     def traverse(node: Tag | NavigableString) -> str:
         if isinstance(node, Comment):
             # ``Comment`` is a ``NavigableString`` subclass: without this
@@ -868,24 +1164,29 @@ def simple_html_to_markdown_traversal(
         if is_block:
             inner_text = inner_text.strip()
 
-        # Post-processing for tables (simplified)
         if node.name == 'tr':
-            # count tds
-            cells = [c.get_text(strip=True) for c in node.find_all(
-                ['td', 'th'], recursive=False)]
-            return f"| {' | '.join(cells)} |\n"
+            return f"| {' | '.join(row_cells(node))} |\n"
         if node.name == 'table':
-            # Try to add a separator line after first row if it looks like a header
-            rows = inner_text.strip().split('\n')
-            if rows:
-                cols_count = rows[0].count('|') - 1
-                if cols_count > 0:
-                    # rough approx
-                    sep = "| " + " | ".join(["---"] * int(cols_count/2)) + " |"
-                    # Actually, the traverse of TR returns newline terminated strings.
-                    # Let's just return what we gathered.
-                    pass
-            return f"\n\n{inner_text}\n\n"
+            carried: dict[int, int] = {}
+            rows = [
+                cells for cells in (
+                    row_cells(tr, carried) for tr in node.find_all('tr')
+                    if tr.find_parent('table') is node
+                ) if cells
+            ]
+            if not rows:
+                return f"\n\n{inner_text}\n\n"
+            width = max(len(cells) for cells in rows)
+            rows = [cells + [''] * (width - len(cells)) for cells in rows]
+            lines = [f"| {' | '.join(cells)} |" for cells in rows]
+            lines.insert(1, '| ' + ' | '.join(['---'] * width) + ' |')
+            caption = node.find('caption')
+            caption_text = (
+                fold(caption) if caption is not None and caption.find_parent('table') is node
+                else ''
+            )
+            lead = f"{caption_text}\n\n" if caption_text else ''
+            return f"\n\n{lead}" + '\n'.join(lines) + "\n\n"
 
         return f"{prefix}{inner_text}{suffix}"
 
@@ -955,11 +1256,90 @@ def _save_plain_text_document(
     return True, url, None, output_path
 
 
+_DOCUMENT_CONTENT_TYPES = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/msword": ".doc",
+    "application/vnd.ms-excel": ".xls",
+    "application/epub+zip": ".epub",
+}
+_DOCUMENT_URL_SUFFIXES = frozenset(
+    PDF_SUFFIXES | EXCEL_SUFFIXES | LEGACY_EXCEL_SUFFIXES | PRESENTATION_SUFFIXES
+    | (DOC_SUFFIXES - {".html", ".htm"})
+)
+
+
+def remote_document_suffix(url: str, content_type: str, head: bytes) -> str | None:
+    """Return the file suffix when a fetched URL is a document, not an HTML page.
+
+    A ``.pdf`` URL (or a suffix-less download that answers ``application/pdf``)
+    has no HTML body; the HTML extractor would fail on it. The body magic and
+    the Content-Type decide first, then the URL suffix, unless the server
+    explicitly answered with HTML (a viewer page at a document-looking URL).
+    """
+    if head.startswith(b"%PDF-"):
+        return ".pdf"
+    ctype = content_type.split(";")[0].strip().lower()
+    if ctype in _DOCUMENT_CONTENT_TYPES:
+        return _DOCUMENT_CONTENT_TYPES[ctype]
+    if ctype.startswith("text/html") or ctype == "application/xhtml+xml":
+        return None
+    suffix = os.path.splitext(urlparse(url).path)[1].lower()
+    return suffix if suffix in _DOCUMENT_URL_SUFFIXES else None
+
+
+def _convert_remote_document(
+    url: str, body: bytes, suffix: str, output_file: str | None,
+    download_images: bool = True,
+) -> tuple[bool, str, str | None, str | None]:
+    """Save a downloaded document beside its Markdown and run its own converter."""
+    stem = os.path.splitext(os.path.basename(urlparse(url).path))[0]
+    output_path = output_file or os.path.join(
+        CONFIG["output_dir"], f"{derive_base_name(stem, url)}.md",
+    )
+    output_dirname = os.path.dirname(output_path) or "."
+    os.makedirs(output_dirname, exist_ok=True)
+    base_name = os.path.splitext(os.path.basename(output_path))[0]
+    local_path = os.path.join(output_dirname, f"{base_name}{suffix}")
+    with open(local_path, "wb") as f:
+        f.write(body)
+    print(f"   [OK] Document: {len(body)} bytes saved to {local_path}")
+
+    route = build_conversion_command(
+        local_path, output_path,
+        pdf_image_mode=None if download_images else "none",
+    )
+    print(f"   [>>] {route.script_name} {local_path}")
+    sys.stdout.flush()
+    rc = subprocess.run(route.command).returncode
+    if rc != 0 or not os.path.isfile(output_path):
+        return False, url, f"{route.script_name} exited with {rc}", None
+    record_source_url(output_path, url)
+    return True, url, None, output_path
+
+
+_META_REFRESH_RE = re.compile(
+    r"^\s*(\d+(?:\.\d+)?)\s*[;,]\s*url\s*=\s*['\"]?([^'\"]+)", re.IGNORECASE)
+
+
+def _meta_refresh_target(soup: BeautifulSoup, base_url: str) -> str | None:
+    """Return the http(s) target of an immediate `<meta http-equiv="refresh">`."""
+    meta = soup.find("meta", attrs={"http-equiv": re.compile(r"^refresh$", re.IGNORECASE)})
+    match = _META_REFRESH_RE.match(meta.get("content", "")) if meta else None
+    if not match or float(match.group(1)) > 5:
+        return None
+    target = urljoin(base_url, match.group(2).strip())
+    return target if urlparse(target).scheme in {"http", "https"} else None
+
+
 def process_url(
     url: str,
     output_file: str | None = None,
     *,
     download_images: bool = True,
+    _refresh_hops: int = 0,
 ) -> tuple[bool, str, str | None, str | None]:
     """Fetch, convert, and save one web page as Markdown.
 
@@ -969,12 +1349,27 @@ def process_url(
     """
     print(f"\n[Fetching] {url}")
     try:
-        html, page_url = fetch_url(url)
+        response = fetch_response(url)
+        suffix = remote_document_suffix(
+            response.url, response.headers.get("Content-Type", ""), response.content[:8])
+        if suffix:
+            return _convert_remote_document(
+                url, response.content, suffix, output_file, download_images,
+            )
+        html, page_url = _decode_response_text(response), response.url
         if is_plain_text_document(url, html):
             return _save_plain_text_document(url, html, output_file)
         soup = BeautifulSoup(html, 'html.parser')
         base = soup.find('base', href=True)
         base_url = urljoin(page_url, base['href']) if base else page_url
+        refresh_url = _meta_refresh_target(soup, base_url)
+        if refresh_url and refresh_url != page_url and _refresh_hops < 3:
+            print(f"   [>>] Meta refresh: {refresh_url}")
+            ok, _, error, saved = process_url(
+                refresh_url, output_file,
+                download_images=download_images, _refresh_hops=_refresh_hops + 1,
+            )
+            return ok, url, error, saved
 
         # Extract Metadata
         metadata = extract_metadata(soup, url)
@@ -1013,6 +1408,17 @@ def process_url(
         # Note: We pass the element to our traversal function
         markdown_text = simple_html_to_markdown_traversal(content_div, base_url)
         print(f"   [OK] Content: {len(markdown_text)} chars")
+        warnings = []
+        if not markdown_text.strip():
+            warnings.append(
+                "no readable body text extracted; the page may render its "
+                "content with scripts or link to it elsewhere")
+            print(f"   [WARN] {warnings[0]}")
+        else:
+            shortfall = _body_shortfall_warning(markdown_text, _page_visible_text(soup))
+            if shortfall:
+                warnings.append(shortfall)
+                print(f"   [WARN] {shortfall}")
 
         # Construct content
         final_output = []
@@ -1044,6 +1450,7 @@ def process_url(
             converter="web_to_md.py",
             conversion_type="web",
             asset_dir=image_dir if image_count else None,
+            warnings=warnings,
         )
 
         print(f"   [OK] Saved: {output_path}")
@@ -1133,10 +1540,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    if args.output and len(targets) > 1:
+        print(
+            "web_to_md.py: error: -o/--output names one Markdown file and takes "
+            "one URL; for several URLs pass --dir <output directory> instead",
+            file=sys.stderr,
+        )
+        return 2
+
     results = []
     for i, url in enumerate(targets):
-        # Allow specific output file only if 1 URL
-        out = args.output if (len(targets) == 1 and args.output) else None
+        out = args.output or None
         success, url, err, out_path = process_url(
             url,
             out,

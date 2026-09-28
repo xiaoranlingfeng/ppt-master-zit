@@ -38,6 +38,8 @@ from console_encoding import configure_utf8_stdio  # noqa: E402
 configure_utf8_stdio()
 
 from beautify_identity import extract_identity  # noqa: E402
+from pptx_ooxml.package import unused_slide_relationship_problems  # noqa: E402
+from pptx_ooxml.slideshow import custom_show_problems  # noqa: E402
 from pptx_opc_validation import (  # noqa: E402
     canonical_opc_part_path,
     resolve_internal_opc_target,
@@ -66,10 +68,13 @@ DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 PRESENTATION_NS = (
     "http://schemas.openxmlformats.org/presentationml/2006/main"
 )
-_SLIDE_PART_RE = re.compile(r"ppt/slides/slide[1-9]\d*\.xml")
-_NOTES_PART_RE = re.compile(r"ppt/notesSlides/notesSlide[1-9]\d*\.xml")
-_MASTER_PART_RE = re.compile(r"ppt/slideMasters/slideMaster[1-9]\d*\.xml")
-_LAYOUT_PART_RE = re.compile(r"ppt/slideLayouts/slideLayout[1-9]\d*\.xml")
+_PRESENTATION_PART_TYPES = {
+    key: f"application/vnd.openxmlformats-officedocument.presentationml.{kind}+xml"
+    for key, kind in (
+        ("slides", "slide"), ("notes", "notesSlide"),
+        ("masters", "slideMaster"), ("layouts", "slideLayout"),
+    )
+}
 _MEDIA_REL_KINDS = frozenset({"audio", "image", "media", "video"})
 _PPT_SAFE_FONT_ALIASES = {
     "等线": "DengXian",
@@ -445,6 +450,8 @@ def _archive_member_problems(
 
 
 def _relationship_problem_code(problem: str) -> str:
+    if "unreferenced relationship" in problem:
+        return "unreferenced_slide_relationship"
     if "<invalid relationships XML:" in problem:
         return "invalid_relationship_xml"
     if " -> <" in problem:
@@ -784,10 +791,7 @@ def audit_pptx_delivery(path: str | Path) -> dict[str, object]:
             package["parts"] = {
                 "entries": len(file_infos),
                 "unique": len(part_names),
-                "slides": sum(bool(_SLIDE_PART_RE.fullmatch(name)) for name in part_names),
-                "notes": sum(bool(_NOTES_PART_RE.fullmatch(name)) for name in part_names),
-                "masters": sum(bool(_MASTER_PART_RE.fullmatch(name)) for name in part_names),
-                "layouts": sum(bool(_LAYOUT_PART_RE.fullmatch(name)) for name in part_names),
+                **dict.fromkeys(_PRESENTATION_PART_TYPES, 0),
                 "media": sum(
                     (canonical_opc_part_path(name) or "").startswith(
                         "ppt/media/"
@@ -832,6 +836,14 @@ def audit_pptx_delivery(path: str | Path) -> dict[str, object]:
                 )
 
             defaults, overrides = _content_type_maps(archive, errors)
+            declared_types = Counter(
+                _declared_content_type_for_part(name, defaults, overrides)
+                for name in part_names
+            )
+            package["parts"].update({
+                key: declared_types[content_type]
+                for key, content_type in _PRESENTATION_PART_TYPES.items()
+            })
             content_type_registry_valid = not any(
                 issue.get("code") in {
                     "missing_content_types",
@@ -871,6 +883,20 @@ def audit_pptx_delivery(path: str | Path) -> dict[str, object]:
             reference_counts, relationship_types, external_media = (
                 _relationship_inventory(archive, part_names, errors)
             )
+            orphan_notes = sorted(
+                name for name in part_names
+                if _content_type_for_part(name, defaults, overrides) in {
+                    'application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml',
+                    'application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml',
+                }
+                and reference_counts.get(canonical_opc_part_path(name) or '', 0) == 0
+            )
+            if orphan_notes:
+                advisories.append(_issue(
+                    "orphan_notes_parts",
+                    "Unreferenced speaker notes parts remain in the package; remove them if no longer needed.",
+                    parts=orphan_notes,
+                ))
 
             media_infos = [
                 info_by_name[name]
@@ -980,6 +1006,11 @@ def audit_pptx_delivery(path: str | Path) -> dict[str, object]:
                     relationship_problems = verify_internal_relationships(
                         extract_dir
                     )
+                    relationship_problems.extend(unused_slide_relationship_problems(extract_dir))
+                    for problem in custom_show_problems({
+                        name: archive.read(name) for name in archive.namelist() if name.endswith('.xml')
+                    }):
+                        errors.append(_issue("dangling_custom_show_reference", problem))
             relationships = package["relationships"]
             if not isinstance(relationships, dict):
                 raise AssertionError(
@@ -987,9 +1018,15 @@ def audit_pptx_delivery(path: str | Path) -> dict[str, object]:
                 )
             relationships["problems"] = relationship_problems
             for problem in relationship_problems:
+                code = _relationship_problem_code(problem)
+                if code == "unreferenced_slide_relationship":
+                    # The target exists and PowerPoint ignores the entry; it
+                    # is dead weight, not a broken package.
+                    advisories.append(_issue(code, problem))
+                    continue
                 errors.append(
                     _issue(
-                        _relationship_problem_code(problem),
+                        code,
                         problem,
                     )
                 )

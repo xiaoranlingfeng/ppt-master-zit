@@ -42,7 +42,7 @@ One resolved row contains these fields:
 | Duration | Finite positive schedule duration; scalable native behavior trees preserve their internal timing ratios |
 | Delay | Finite non-negative row offset; shape-trigger rows use it as `TriggerDelayTime` |
 | Order | Positive integer sidecar order; ties retain stable SVG group order, then `effects[]` index; a group with no sidecar `order` follows the nearest listed group before it in SVG order (and precedes every listed group when none precedes it), so a headline above the numbered body enters first |
-| Effect options | Effect-specific `direction`, `amount`, `color`, `font_name` (one installed PowerPoint face, required for Change Font; not a CSS list), `relative`, or `size` values from PowerPoint `EffectParameters` |
+| Effect options | Effect-specific `direction`, `amount`, `color`, `font_name` (one installed PowerPoint face, required for Change Font; not a CSS list), `relative`, or `size` values from PowerPoint `EffectParameters`; an edge `direction` (`up` / `right` / `down` / `left`) names the side the effect starts from, PowerPoint's From Top / From Right / From Bottom / From Left |
 | Timing options | Repeat count/span, auto-reverse, rewind, accelerate/decelerate, bounce-end ratio, and restart policy |
 | Completion / cue | Optional dim/hide behavior and packaged `.m4a`/`.mp3`/`.wav` sound |
 
@@ -297,7 +297,7 @@ animation-to-video contract.
 | `order` | Page-wide order for ordinary rows; ties keep SVG group order, then `effects[]` index; an unlisted animated group inherits the order of the nearest listed group above it in SVG order (0 before the first); `trigger_shape` rows keep relative order in separate interactive sequences; SVG layer order never changes |
 | `delay` | Row-specific seconds added to the resolved Start or shape trigger |
 | `duration` | Per-row schedule duration; scalable native trees keep internal ratios, while `entrance_appear` and instantaneous presets keep their authored duration and use the value for `after-previous` spacing |
-| `effect_options` | Effect-specific parameters (`direction`, `amount`, `color`, `font_name`, `relative`, `size`) limited to what the selected effect supports (`pptx_animations.py --describe <effect>`); requires an explicit canonical `effect` in the same block or row; `font_name` is one target-installed face |
+| `effect_options` | Effect-specific parameters (`direction`, `amount`, `color`, `font_name`, `relative`, `size`) limited to what the selected effect supports (`pptx_animations.py --describe <effect>`; `direction` is the way the motion travels — PowerPoint names the origin edge, so `right` is its "From Left"); requires an explicit canonical `effect` in the same block or row; `font_name` is one target-installed face |
 | `trigger_shape` | Different top-level group id for native **On Click of**; row-only, not inherited; implies `on-click` and accepts an explicit row `trigger` only when it is also `on-click` |
 | `repeat_count` / `repeat_duration` | Repeat count or total repeat span; mutually exclusive |
 | `auto_reverse`, `rewind` | Reverse each cycle and/or restore the pre-animation state |

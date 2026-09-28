@@ -55,8 +55,9 @@ staging transaction, before the editable bundle first appears:
   move to `icons/imported/*.svg`; the asset, placeholder, and v2 inventory all
   declare the fixed `decoration` role. Any subtree containing semantic
   authoring content remains inline;
-- unsupported, text-free, schema-free source ornaments with no semantic marker
-  may become
+- unsupported graphic frames (including SmartArt and OLE) become atomic source
+  proxies, retaining their existing labelled preview. Large text-free,
+  schema-free source ornaments may also become
   `<image data-pptx-source-proxy="native-restore">` references whose hashed SVG
   previews live under `images/source-object-previews/`.
 
@@ -65,8 +66,8 @@ an imported vector asset only when editing that decoration. An unchanged asset
 restores its native source objects; editing the asset rebuilds every slide whose
 placeholder references that vector edit unit. A source proxy remains atomic: leave it unchanged
 to restore the original native PowerPoint object. A complete Slide-local proxy
-may be removed to delete that object; an inherited Master/Layout proxy must
-remain because one flat page cannot delete shared structure. Editing the proxy
+may be removed to delete that object. Every inherited Master/Layout source ref
+must remain unchanged because one flat page cannot edit shared structure. Editing the proxy
 or its preview asset fails round-trip export instead of silently rasterizing or
 flattening the object.
 
@@ -90,7 +91,13 @@ invalid. `svg_to_pptx.py --roundtrip` always reads `authoring-svg-flat/`,
 restores unchanged source refs from `analysis/roundtrip-svg/`, expands imported
 vector edit units from `icons/imported/`, and retains edits/deletions/new
 content without rewriting the bundle. Unchanged slides and resources pass
-through byte-for-byte. A page edit rebuilds that output page; a changed
+through byte-for-byte. Object comparison includes effective ancestor transforms,
+opacity, inherited styles, and enclosing links; changing a proxy's context also
+fails. When an edited shape's text and text context still match the baseline,
+the materializer restores its relationship-free source `txBody` through the
+existing fingerprint/relationship checks, preserving fields, numbering,
+autofit, language, and text effects. Edited text follows normal conversion.
+A page edit rebuilds that output page; a changed
 materialized or derived resource rebuilds every output page that references it.
 Changed materialized bytes must still match the source package part's extension
 and Content-Type. Resource hrefs resolve exactly relative to the page or
@@ -143,15 +150,29 @@ An unchanged planned page keeps the source slide XML and receives its own
 relationship graph. Repeated pages clone notes slides, charts, diagrams,
 embeddings, and other private structured parts under unique part names while
 ordinary media may remain shared. An edited copy overlays only its edited
-owners onto its cloned source page. Same-deck slide-jump links follow the
-page-plan contract: a target must map to exactly one output page. An
-omitted or repeated destination is an error; external links remain unchanged.
+owners onto its cloned source page. Inherited same-deck slide jumps retain
+source-page identity through text edits and adoption, then map to the output
+roster. New links and changed destinations use output-page `#slide-N` numbers.
+An inherited target must map to exactly one output page; omitted or repeated
+destinations fail, except that a source self-jump follows its own output copy.
+An adopted link still targets its source destination. Removed/replaced object
+links do not block the source-package preflight; surviving links still do.
+External links remain unchanged.
 Omitting a source slide deliberately drops its private video, audio, or opaque
 native payloads; a kept slide still fails if rebuilding it would discard such
 relationships.
 With a plan present, presentation-level `sectionLst` and custom-show rosters
-are dropped, output `p:sldId` values are renumbered, and the slide count in
-`docProps/app.xml` is updated.
+are dropped, show/range playback selections reset to all output slides, every Master and Layout part is retained, output
+`p:sldId` values are renumbered, and the slide count in `docProps/app.xml` is
+updated. A retained action targeting a removed custom show fails with its
+slide/part and show ID; delivery checking also verifies this semantic closure.
+
+After a slide edit, unused explicit payload relationships are removed before
+package reachability pruning. This removes replaced charts, their workbooks,
+and deleted diagram dependencies. Layout/notes and other implicit structural
+relationships stay. Legacy SmartArt drawing-cache references in live diagram
+data also stay. Delivery checking reports explicit Slide relationships with no
+remaining XML consumer under `relationships.problems`.
 
 Output-page sidecars are keyed by the authoring SVG stem. A repeated copy
 inherits its source row from `animations.json` unless that output stem has its
@@ -164,7 +185,7 @@ notes and an absent file keeps them. Deleting inherited source notes only on a
 copy is not supported in v1. The same output-stem rule applies to narration
 audio.
 
-When a round-trip recorded-narration export omits `--animation-config`, it uses the workspace `animations.json` when present and otherwise applies no sidecar while preserving source motion.
+When a round-trip recorded-narration export omits `--animation-config`, it reads the workspace `animations.json` the importer wrote; that sidecar is part of the workspace contract, so deleting it fails export rather than restoring source motion.
 
 Narration audio is keyed by the output SVG stem. A copied output page uses its
 own stem-keyed notes when present and otherwise inherits the declared source
@@ -189,7 +210,7 @@ while order, notes, or motion may change; `rebuilt` means visible authoring or
 one of its referenced resources changed.
 Without `-o`, round-trip export names the deck `<workspace-directory-name>_<timestamp>[<flavor-suffix>].pptx` under `exports/`.
 
-Before export, run `python3 scripts/svg_quality_checker.py <workspace> --roundtrip`
+Before export, run `python3 scripts/svg_quality_checker.py <workspace> --roundtrip --json`
 as the round-trip text-capacity gate. It resolves the output roster from
 `authoring-svg-flat/` and optional `page_plan.json`, then applies the shared
 font-family, font-size, text-width, and canvas metrics only to new text or
@@ -200,6 +221,24 @@ overflow against the nearest-rect-sibling fallback is advisory, while bounds
 leaving the page canvas remain blocking. Other advisories remain non-blocking.
 Unchanged source refs, source proxies, and generated-project-only spec,
 template, canonical-authoring, and resource-manifest checks are excluded.
+
+The checker also enforces the exporter's semantic shape text contract on
+converted content: a `data-pptx-semantic-object="shape"` group may contain at
+most one direct `<text>`, with `data-pptx-frame` on its owner. Multiple lines
+belong in that component's `<tspan>` paragraphs. Ordinary groups are unaffected;
+unchanged native source objects remain excluded. Generate checks the same
+contract.
+
+`--json` writes `validation/svg_quality_report.json`. Both tools fingerprint
+`authoring-svg-flat/*.svg` and the optional `page_plan.json`; changing either
+after validation makes the export receipt `quality_gate=stale`. A current
+report with no blocking errors yields `quality_gate=passed`. Without a report,
+export remains allowed and reports `quality_gate=not-provided`.
+
+`--roundtrip --no-notes` removes all speaker notes slide/master parts, their
+relationships, and Content-Type overrides, including on the identity export
+without a page plan. `pptx_delivery_check.py` reports unreferenced notes parts
+as an advisory.
 
 Regenerate the summary after direct edits that do not pass through one of the
 in-place normalization tools:
@@ -506,8 +545,9 @@ PPTX import projections and mirror materialization call the same tree-level
 implementation before publishing their authoring SVG. Standard workflows do
 not rewrite completed SVG: they pass `--canonical-authoring` to
 `svg_quality_checker.py`, which reports any remaining deterministic change as an
-advisory warning (run `compact_svg_styles.py <svg_output> --inplace` on
-authored project pages, re-run `stamp_native_fallbacks.py --write` on pages
+advisory warning (run `compact_svg_styles.py <svg_output> --inplace` for
+style findings or `compact_svg_coordinates.py <svg_output> --inplace
+--keep-native-frames` for page-space metadata on authored project pages, re-run `stamp_native_fallbacks.py --write` on pages
 that carry Chart/Table fallbacks because the rewrite changes their
 fingerprinted subtree, then rerun the final gate to normalize, or keep the
 explicit form). Structured template rosters keep their explicit form: per-slide
@@ -575,12 +615,12 @@ detects later visible edits; it is not a semantic-equivalence proof.
 ## `mirror_template_materialize.py`
 
 Validate and publish one Type A PPTX import workspace as a deterministic
-structured mirror after Template_Designer has reviewed/authored the new compact
-layered SVG:
+structured mirror directly from the importer's layered IR; no per-page edit or
+summary refresh is needed:
 
 ```bash
 python3 scripts/mirror_template_materialize.py \
-  <import_workspace> <template_workspace>
+  <import_workspace> <template_workspace> [--kind deck|layout]
 ```
 
 The command treats `<import_workspace>/authoring-svg/` as the sole visible
@@ -648,9 +688,15 @@ The output routes reusable decoration vectors once to `icons/imported/`, image m
 `images/`, audio and video to their semantic directories, and opaque referenced
 files to `native-payloads/imported/`. The JSON report
 reports payload occurrence, native-record, unique-byte, and compressed-store
-counts and is written to stdout only. The command intentionally does not create
-`templates/design_spec.md`; Template_Designer writes the package-specific rules
-and page roster after publication. This validator/publisher is for Type A mirror,
+counts and is written to stdout only. It also writes a factual Design Spec
+skeleton by default (kind `deck`; choose `--kind layout` for a neutral Layout
+publication). The skeleton records canvas, source slide count, Master/Layout keys,
+picker names, slots, and a Source Preservation Map. Identity and design prose
+remain TODOs; finish them before registration. Resolved workspaces under
+`skills/ppt-master/templates/<kind_dir>/` use `templates/design_spec.md`;
+all other workspaces use `templates/design_spec.<kind>.TODO.md`, even when their
+`templates/` is empty. The `spec_skeleton` receipt records that path.
+See [template-tools.md](template-tools.md#mirror-publication). This validator/publisher is for Type A mirror,
 not `standard` / `fidelity`, loose Type B SVGs, ordinary generation, finalize,
 or export.
 
@@ -753,6 +799,10 @@ EMF/WMF images referenced by a page are preserved as external references, never 
 
 Convert project SVGs into PPTX. EMF/WMF images referenced from `svg_output/` are embedded as native `image/x-emf` / `image/x-wmf` media at full vector fidelity.
 
+Each exported object is named after `data-pptx-shape-name`, else its SVG `id` (or `data-name`), else a positional `Group N` / `TextBox N`; forced-Morph `!!` names still win. The PowerPoint Selection and Animation panes therefore read like the source SVG.
+
+The deck language — the lock's `primary_language`, else the first page's root `<svg lang="...">` (Quick's channel), else `--primary-language TAG` — tags base-template default text (new text boxes, master and layout placeholders) and docProps; a right-to-left language also makes those defaults right-to-left and right-aligned, and the theme's script font for that language (`Arab`, `Hebr`, `Thai`, `Deva`, ...) points at the locked face, which a lockless roster takes from its pages. A run of Latin letters inside a non-Latin deck is tagged `en-US`; the tag is per run, so an English phrase sharing one run with CJK text (`中文 · English` in a single `<text>` with one style) takes the deck language — give it its own `<tspan>` with a distinct attribute when spell-check and hyphenation should treat it as English.
+
 Native formulas use the two markers owned by
 [`native-formula.md`](../../references/native-formula.md). A standalone block
 stores delimiter-free LaTeX in the JSON metadata of
@@ -760,7 +810,13 @@ stores delimiter-free LaTeX in the JSON metadata of
 `<tspan data-pptx-inline-formula="...">preview</tspan>` inside ordinary text
 exports `m:oMath` in the same DrawingML paragraph as its surrounding runs; it
 inherits computed size and visible solid fill, then uses the project text
-language and Cambria Math.
+language and Cambria Math. LaTeX can be compile-checked before any SVG is
+written, so an unsupported command is caught at planning time:
+
+```bash
+python3 -c "import sys; sys.path.insert(0, 'skills/ppt-master/scripts'); from svg_to_pptx.native_objects.formula_compiler import compile_latex_to_omml as c; c(sys.argv[1])" '\frac{a}{b} \int_0^T e^{-i\omega t}\, dt'
+```
+
 Matrices, multiline derivations, and other high-structure expressions remain
 blocks. Formula replacement is always active, independent of
 `--native-charts-and-tables`: export replaces only the registered SVG preview
@@ -871,7 +927,7 @@ Behavior:
   - `--no-merge`: each dy-stacked line becomes an independent frame with its own placement.
   - Detection is conservative: mixed-layout `<text>` falls back to per-line frames. Use `--reflow-text` only for resizable body copy and `--no-merge` only for independent line objects or absolute line positions.
 - Native release export reads `svg_output/`; `-s <directory>` selects another project-relative SVG source. `-s final` remains an explicit diagnostic comparison against post-processed SVGs and does not change artifact ownership. `--enable-dangerous-nonconforming-svg-export` is a separate, explicitly requested flat compatibility path for either the default or selected source; it forces flat structure, restores no imported source object, and cannot combine with `--roundtrip` or `--quick-generate`.
-- `--roundtrip` accepts only `authoring-svg-flat/` and the source/contracts emitted by `pptx_to_svg.py --roundtrip`; predecessor root sidecars and alternate `-s` inputs fail. It restores unchanged refs from `analysis/roundtrip-svg/`, preserves unchanged Slide XML/relationships and source resources byte-for-byte, rebuilds a page whose authoring changed, and rebuilds every output page that references a changed resource. Closed unchanged chart packages recover exactly; editing their fallback disables stale replacement. Optional root `page_plan.json` uses the versioned deck-plan contract above; the no-plan path remains the identity export. Explicit `-t <effect>` without `--transition-duration` on a source without transitions uses the default duration.
+- `--roundtrip` accepts only `authoring-svg-flat/` and the source/contracts emitted by `pptx_to_svg.py --roundtrip`; predecessor root sidecars and alternate `-s` inputs fail. It restores unchanged refs from `analysis/roundtrip-svg/`, preserves unchanged Slide XML/relationships and source resources byte-for-byte, rebuilds a page whose authoring changed, and rebuilds every output page that references a changed resource. Closed unchanged chart packages recover exactly; editing their fallback disables stale replacement. Optional root `page_plan.json` uses the versioned deck-plan contract above; the no-plan path remains the identity export. Motion fields are compared independently with the import baseline: omitted slide `transition` preserves source motion even when importer defaults say `none`, while changed `defaults.animation` participates in animation replacement. Effect-only changes preserve source `advClick` / `advTm`; explicit advance settings or narration timings replace them. Explicit `-t <effect>` without `--transition-duration` on a source without transitions uses the default duration.
 - `svg_final/` may be opened directly or inserted into PowerPoint as an SVG picture. PowerPoint's manual Convert-to-Shape operation is outside the compatibility contract.
 - On every SVG-authoring route, each file in `svg_output/` is the complete visible
   page-design source. Templates and locks may guide authoring, but finalize/export
@@ -880,7 +936,7 @@ Behavior:
   inputs and package-level processing.
 - For PPTX template-import workspaces, use `-s svg-flat` when you need a visual round-trip check. The layered `svg/` tree is the machine-readable template source and intentionally does not inline inherited master / layout decoration into each slide.
 - Native mode is strict about unsupported visual SVG elements: if a visual element cannot be represented or safely preserved, export fails with the SVG file, element tag, and position instead of silently dropping content. Dangerous compatibility export first applies the registry in `svg_compatibility.py`; it currently lowers a filter on an otherwise attribute-free one-child group whose child is a supported native filter target. The complete strict preflight then runs normally; every remaining contract, resource, conversion, relationship, or package error still blocks export.
-- Default export omitting `--pptx-structure` reads `spec_lock.md`. Free-design, brand-only, and `template_reuse_scope: style` releases declare `mode: flat`, omit Master/Layout mappings and SVG structure metadata, and materialize one clean project-owned Master plus one Blank Layout from the current lock. Deck/layout templates use `mode: structured` only for `template_reuse_scope: mirror|layout`, with complete unique `pptx_masters` / `pptx_layouts` rosters and one `page_pptx_layouts` assignment per page. A template-backed Layout definition may remain unused by pages and still register in the final package.
+- Default export omitting `--pptx-structure` reads `spec_lock.md`. Free-design, brand-only, and `template_reuse_scope: style` releases declare `mode: flat`, omit Master/Layout mappings and SVG structure metadata, and materialize one clean project-owned Master plus one Blank Layout from the current lock. Deck/layout templates use `mode: structured` only for `template_reuse_scope: mirror|layout`, with explicit registered `pptx_masters` / `pptx_layouts` sets and one `page_pptx_layouts` assignment per page. Only Layouts listed in `pptx_layouts` register; this may be a subset of installed prototypes. Every page assignment must reference that set. An unused prototype registers only when explicitly listed; Quick without a lock registers only Layouts used by its pages. The checker uses the same dependency set for typed chart/table export hints.
 - On structured template routes, every page root repeats Master/Layout keys and picker names. Master/Layout fixed visuals are direct semantic atoms. Ordinary layer `<g>` elements are invalid; one validated compact authored-preset `<g>` emitted by `preset_shape_svg.py` is the sole group exception because it compiles to one native shape.
 - Every visible direct root `<g>` except a compact helper-authored preset atom requires root-coordinate `data-pptx-bounds`; nested bounds are ignored. The text-free preset atom remains top-level when standalone, uses `data-pptx-frame`, and never carries bounds. Frame/native metadata never replaces bounds on any other group; placeholder bounds also define the slot frame. Checker fails ordinary direct-root module pairs whose intersection exceeds `1px` on both axes; complete structured slots, registered structural-role groups, and wholly off-canvas Morph staging groups are excluded, while ordinary Slide-local groups remain checked on structured pages. Checker compares root bounds with `viewBox`, estimable descendant text—including the canonical direct first line plus later positioned tspan form—with its module using DrawingML wrapping headroom, and every estimable visible text carrier directly with the root `viewBox` before that headroom. Images, shapes, paths, `<use>`, effects, and object frames are excluded from module containment. Per side, ≤`1px` is ignored; module overflow ≤`5%` warns and >`5%` fails, while larger page text overflow always fails. Bounds never clip/reflow; unestimable visible text warns. A wholly off-canvas direct-root Morph endpoint may opt out of page containment with `data-pptx-morph-staging="true"`; it still needs valid module bounds, retained Morph uses an explicit pair, and partial overflow remains blocking.
 - Missing required root bounds fails on final pages/templates and under `--template-mode`; references warn until adapted.
@@ -920,7 +976,7 @@ Behavior:
 - Per-element animation applies to ordinary top-level SVG `<g id="...">` groups; each group is a PowerPoint shape-target anchor, not necessarily one Animation Pane row. Use one group per logical Slide-local content unit rather than targeting a group count
 - For chrome defaults, static role/placeholder overrides, and structural exclusions, see [`animations.md`](../../references/animations.md) §5
 - Start mode is set globally by `--animation-trigger`, mirroring PowerPoint's Start dropdown: `after-previous` (default, cascade with `--animation-stagger` spacing on slide entry), `on-click` (presenter-paced), or `with-previous` (all together on slide entry). A sidecar row may override it with `trigger`; the slide value is only the inherited Start mode
-- `on-click` is for live presentations only; recorded narration rejects every row that resolves to it, including a row with `trigger_shape`, because the tool does not generate object-level click timings
+- `on-click` is for live presentations only; recorded narration rejects every row that resolves to it, including `trigger_shape` and preserved native click/interactive timing that could not be reconstructed into the sidecar. Diagnostics identify the output stem, source slide, and shape ids; the tool does not generate object-level click timings
 - Flat SVG roots without top-level groups fall back to at most 8 visible primitives; beyond that, animation is skipped on the slide
 - Per-element animation defaults to `none`. `auto` is opt-in (`-a auto`) and maps
   generic entrance effects from the group's SVG id: information-dense elements
@@ -1013,10 +1069,13 @@ Requirements:
 
 `text_measure.py` imports the same single-line DrawingML width estimator used by
 the SVG quality checker.
-Use Arial, Times New Roman, Georgia, Verdana, or Calibri for bundled per-glyph
-advance measurements from `svg_to_pptx/drawingml/font_advances.json` in regular,
-bold, italic, and bold-italic styles. Expect other families to keep the
-class-average estimate, with the existing fixed advances for monospaced faces.
+Use Arial, Times New Roman, Georgia, Verdana, Calibri, Cambria, Trebuchet MS, or
+Garamond for bundled per-glyph advance measurements from
+`svg_to_pptx/drawingml/font_advances.json` in regular, bold, italic, and
+bold-italic styles; Tahoma and Segoe UI carry regular and bold only (Segoe UI is
+measured from Selawik, Microsoft's OFL metric-compatible replacement). Expect a
+missing style or another family to keep the class-average estimate, with the
+existing fixed advances for monospaced faces.
 
 - `measure` prints one `width<TAB>text` line per input, or a JSON array with
   `--json`.
@@ -1027,8 +1086,10 @@ class-average estimate, with the existing fixed advances for monospaced faces.
 - `box` prints a `data-pptx-bounds` attribute plus numeric `top` and `bottom`, or
   a JSON bounds object with `--json`.
 - `calibrate` measures fixed CJK and Latin samples for every typography role
-  from `spec_lock.md` or repeatable `--role NAME:FAMILY:SIZE` overrides, writes
-  `validation/text_calibration.json`, and prints a compact table or JSON. The
+  from `spec_lock.md` or repeatable `--role NAME:FAMILY:SIZE[:bold]` overrides, writes
+  `validation/text_calibration.json`, and prints a compact table or JSON.
+  Incremental `--role` calls retain other saved roles with their weights, rates,
+  and script samples; unmeasured script cells display `-`. The
   estimator is additive across scripts, so a line mixing CJK with Latin words
   or digits is estimated as (CJK chars ÷ CJK rate + other chars ÷ Latin rate)
   × 100; spaces and ASCII punctuation count as Latin, fullwidth punctuation as
@@ -1037,9 +1098,12 @@ class-average estimate, with the existing fixed advances for monospaced faces.
   (headroom included), while the checker measures each real line glyph by
   glyph: capital-heavy words, digits, and wide letters run wider than the Latin
   rate, so the table also prints CAPS and DIGITS rates, and a zone should stay
-  about 5% below its bounds width. `--outline` adds the longest §IX planned
+  about 5% below its bounds width. The rates ignore `letter-spacing`, so a
+  tracked role or a display-size line is sized per string with `measure
+  --letter-spacing`. `--outline` adds the longest §IX planned
   line per role — the planned wording only; a line rewritten while authoring
-  is re-estimated with the rates. The checker's overflow
+  is re-estimated with the rates. Quick projects have no Design Spec, so
+  the column stays empty there and the table says so. The checker's overflow
   diagnostic prints that line's average px per character, which is not a
   reusable rate. A lock role without its own
   `<role>_family` resolves to `title_family` when the role name contains
@@ -1050,6 +1114,7 @@ class-average estimate, with the existing fixed advances for monospaced faces.
 
 ```bash
 python3 scripts/text_measure.py measure "Editable DrawingML text" --size 22
+python3 scripts/text_measure.py measure --size 22 -- "34.5%" "-1.3%"   # values that start with "-" go after --; a paragraph over 255 characters goes through --stdin
 python3 scripts/text_measure.py wrap "Editable DrawingML text stays measurable" --size 22 --max-width 240 --x 96 --dy 30 --y 140
 python3 scripts/text_measure.py box "First line" "Second line" --x 96 --y 140 --size 22 --lines 2 --dy 30
 python3 scripts/text_measure.py calibrate projects/example --outline
@@ -1109,12 +1174,15 @@ standards rather than this pipeline overview.
 
 Analyze and review supported chart coordinates after SVG generation.
 
+Numeric parameters and data values must be finite; NaN and either Infinity sign exit non-zero with the offending parameter or data point identified.
+
 Use this after `svg_quality_checker.py` passes, and only for chart types supported by this script: `bar`, `pie` / `donut`, `radar`, `line` / `area` / `scatter`, and `grid`. Area charts do not have a separate calculator mode: use `calc line` for the upper boundary points, then close the filled region to the plot area's bottom baseline (`y_max`) in the SVG.
 
 ### Calculate expected coordinates
 
 ```bash
 python3 scripts/svg_position_calculator.py calc bar --data "A:185,B:142" --area "130,155,1200,480" --bar-width 120
+python3 scripts/svg_position_calculator.py calc bar --data "A:185,B:142" --area "130,155,1200,480" --gap-width 150   # native-ready: equal category slots, bar width = slot / (1 + gap_width/100)
 python3 scripts/svg_position_calculator.py calc line --data "0:50,10:80,20:120" --area "120,120,1200,600" --y-range "0,150"
 python3 scripts/svg_position_calculator.py calc pie --data "A:35,B:25,C:20" --center "420,400" --radius 200
 python3 scripts/svg_position_calculator.py calc grid --rows 2 --cols 3 --area "50,150,1230,670"
