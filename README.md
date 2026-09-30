@@ -1,4 +1,4 @@
-# ppt-master-zit
+# ppt-master-qwen-image-2-1
 
 [English](#english) · [中文](#中文)
 
@@ -12,7 +12,7 @@
 
 ### What differs from upstream
 
-| | Official ppt-master | ppt-master-zit |
+| | Official ppt-master | ppt-master-qwen-image-2-1 |
 |---|---|---|
 | Image backend | openai / gemini / qwen and other cloud APIs | all preserved, **plus a new local `comfyui` backend, enabled by default** |
 | Generation engine | cloud models | local ComfyUI = Qwen-Image-2.1 (7B DiT int8 + Qwen3-VL 8B int8); fallback "zit基础" Z-Image Turbo |
@@ -90,7 +90,7 @@ MIT — upstream copyright belongs to [Hugo He](https://github.com/hugohe3/ppt-m
 
 ### 与上游的差异
 
-| 项 | 官方 ppt-master | 本仓库 ppt-master-zit |
+| 项 | 官方 ppt-master | 本仓库 ppt-master-qwen-image-2-1（原 ppt-master-zit） |
 |---|---|---|
 | 图片后端 | openai / gemini / qwen 等云端 API | 全部保留，**新增 `comfyui` 本地后端并默认启用** |
 | 出图引擎 | 云端模型 | 本机 ComfyUI = Qwen-Image-2.1（7B DiT int8 + Qwen3-VL 8B int8）；备选「zit基础」Z-Image Turbo |
