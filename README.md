@@ -65,12 +65,16 @@ python scripts/image_gen.py "students collaborating in a bright classroom, flat 
 
 ### Prompting tips (Qwen-Image-2.1)
 
-- Write flowing natural-language sentences (subject → scene → lighting → style), not tag soup; Chinese or English both work
-- Native transparent cutouts: wrap the prompt as `This is an RGBA format image with transparency. <subject>. The image has an alpha channel and a transparent background.` and save PNG — no chroma-key despill step needed
+- **House default: every deck asset is 16:9 RGBA** — subject cutouts, section art, and background decorations all carry real alpha and drop onto any slide color without a white box
+- Three-slot wrapper on every prompt: `This is an RGBA format image with transparency.` → natural-language description → `The image has an alpha channel and a transparent background.`; middle text in Chinese or English, no tag soup
+- Layout is steerable through alpha: name the empty zone ("the center and left area must be completely empty, reserved for slide text") and it comes back transparent
+- Three recipes: A subject cutout hugging one third · B edge-frame decoration with emptied center · C atmosphere shape layer (author the shape fully; set layer opacity in SVG/PPTX compositing — the model ignores "max N% opacity" numbers)
+- Paint in the deck's own palette family so semi-transparent edges composite invisibly on the slide background
 - Keep cfg at 1 (official path); negative prompts have no effect there
 - **Every prompt must end with** "画面中不出现任何文字、字母、数字或水印" / "Strictly no text, no letters, no numbers, no watermarks anywhere."
-- For abstract-concept section art, prefer English prompts — Chinese concept words can get rendered into the image as gibberish glyphs, which the no-text clause alone cannot prevent
 - Visually inspect every generated image; re-roll any that contain text
+
+(§4.5 of `references/image-generator.md` is the authoritative, verified version of these rules.)
 
 ### License
 
@@ -139,12 +143,16 @@ python scripts/image_gen.py "明亮教室里的学生协作，扁平插画，暖
 
 ### 提示词要点（Qwen-Image-2.1）
 
-- 自然语言整句（主体→场景→光影→风格），不要标签堆砌；中文英文皆可
-- 原生透明抠图：提示词包裹 `This is an RGBA format image with transparency. <主体>. The image has an alpha channel and a transparent background.`，存 PNG 即带 alpha，无需绿幕抠色流程
+- **默认规范：所有 PPT 配图 / 背景图一律 16:9 RGBA**——主体插图、章节图、背景装饰都带真实 alpha 通道，直接贴任何底色页面，没有白框
+- 三槽包裹：`This is an RGBA format image with transparency.` → 自然语言描述 → `The image has an alpha channel and a transparent background.`；中间描述中英皆可，不要标签堆砌
+- 布局可通过 alpha 指令控制：明确指定留空区（"画面中央与左侧完全留空透明，预留放文字"），该区域就会真的透明
+- 三种配方：A 主体贴边抠图（占三分之一）· B 边缘框饰（中间留空）· C 氛围形状层（模型只画形状，"最大 15% 不透明度"这类数字它不理——透明度在 SVG/PPTX 合成层设置）
+- 用演示文稿自己的同色系给 RGBA 素材上色，半透明边缘在页面底色上无痕融合
 - cfg 保持 1（官方路径），此时负面词不生效
-- **每句必须带**「画面中不出现任何文字、字母、数字或水印」/ "Strictly no text, no letters, no numbers, no watermarks anywhere."
-- 抽象概念类章节图慎用中文概念词——模型可能把词直接画成乱码假字，改英文更安全
+- **每句必须带**「画面中不出现任何文字、字母、数字或水印」
 - 出图后逐张目检，有字即改 prompt 重跑 manifest
+
+（权威版本见 `references/image-generator.md` §4.5，全部结论有实测背书。）
 
 ### 许可证
 
