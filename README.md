@@ -8,7 +8,7 @@
 
 ## English
 
-**PPT Master + local ComfyUI image backend.** This is a personal-machine fork of [ppt-master](https://github.com/hugohe3/ppt-master) (v6.6.0, MIT, Copyright © 2025-2026 Hugo He). The entire editable-PPTX generation workflow is identical to upstream; the one difference is that **AI slide imagery defaults to your local ComfyUI running the Qwen-Image-2.1 text-to-image workflow — no API key, no cost, nothing leaves your machine.** The legacy "zit基础" (Z-Image Turbo) workflow stays selectable as a speed-first fallback.
+**PPT Master + local ComfyUI image backend.** This is a personal-machine fork of [ppt-master](https://github.com/hugohe3/ppt-master) (v6.7.0, MIT, Copyright © 2025-2026 Hugo He). The entire editable-PPTX generation workflow is identical to upstream; the one difference is that **AI slide imagery defaults to your local ComfyUI running the Qwen-Image-2.1 text-to-image workflow — no API key, no cost, nothing leaves your machine.** The legacy "zit基础" (Z-Image Turbo) workflow stays selectable as a speed-first fallback.
 
 ### What differs from upstream
 
@@ -86,7 +86,7 @@ MIT — upstream copyright belongs to [Hugo He](https://github.com/hugohe3/ppt-m
 
 ## 中文
 
-**PPT Master + 本机 ComfyUI 配图后端** — 这是 [ppt-master](https://github.com/hugohe3/ppt-master) (v6.6.0, MIT, Copyright © 2025-2026 Hugo He) 的本机定制分支：整套可编辑 PPTX 生成工作流与官方一致，唯一区别是 **AI 配图默认走本机 ComfyUI 的 Qwen-Image-2.1 文生图工作流，不需要任何 API Key**。旧「zit基础」（Z-Image Turbo）工作流保留为可切换的高速备选。
+**PPT Master + 本机 ComfyUI 配图后端** — 这是 [ppt-master](https://github.com/hugohe3/ppt-master) (v6.7.0, MIT, Copyright © 2025-2026 Hugo He) 的本机定制分支：整套可编辑 PPTX 生成工作流与官方一致，唯一区别是 **AI 配图默认走本机 ComfyUI 的 Qwen-Image-2.1 文生图工作流，不需要任何 API Key**。旧「zit基础」（Z-Image Turbo）工作流保留为可切换的高速备选。
 
 ### 与上游的差异
 

@@ -195,7 +195,7 @@
             mode_continuous_desc: "Generate the whole deck in one pass.",
             mode_split_desc: "Stop after the spec; resume SVG generation in a fresh window.",
             refine_off_desc: "Write the Design Spec and execution lock in sequence, then auto-proceed.",
-            refine_on_desc: "Stop after the Design Spec. Revise any part in chat; approval then creates the execution lock and continues generation.",
+            refine_on_desc: "Stop after the Design Spec. A review page opens: edit any page directly or leave comments; approval in chat then creates the execution lock and continues generation.",
             off_default: "Off",
             on: "On",
             option_prefix: "Option",
@@ -384,7 +384,7 @@
             mode_continuous_desc: "デッキ全体を一気に生成します。",
             mode_split_desc: "設計仕様の作成後に停止し、別ウィンドウでSVG生成を再開します。",
             refine_off_desc: "設計仕様と実行ロックを順番に作成し、そのまま自動で進みます。",
-            refine_on_desc: "設計仕様の作成後に停止します。チャットで任意の箇所を修正し、承認後に実行ロックを作成して生成を続けます。",
+            refine_on_desc: "設計仕様の作成後に停止します。レビューページが開き、各ページを直接編集するかコメントを残せます。チャットで承認すると実行ロックを作成して生成を続けます。",
             off_default: "オフ",
             on: "オン",
             option_prefix: "案",
@@ -573,7 +573,7 @@
             mode_continuous_desc: "一次性连续生成整份演示文稿。",
             mode_split_desc: "写完设计规范后停止，另开窗口继续生成页面。",
             refine_off_desc: "依次生成设计规范和执行锁，然后自动继续。",
-            refine_on_desc: "生成设计规范后暂停；你可在聊天中修改任何部分，明确确认后再生成执行锁并继续制作。",
+            refine_on_desc: "生成设计规范后暂停，并打开评审页面：可逐页直接修改或留下修改意见；在聊天中明确确认后再生成执行锁并继续制作。",
             off_default: "关",
             on: "开",
             option_prefix: "方案",
@@ -762,7 +762,7 @@
             mode_continuous_desc: "一次性連續生成整份簡報。",
             mode_split_desc: "寫完設計規範後停止，另開視窗繼續生成頁面。",
             refine_off_desc: "依次生成設計規範和執行鎖，然後自動繼續。",
-            refine_on_desc: "生成設計規範後暫停；你可在聊天中修改任何部分，明確確認後再生成執行鎖並繼續製作。",
+            refine_on_desc: "生成設計規範後暫停，並開啟評審頁面：可逐頁直接修改或留下修改意見；在聊天中明確確認後再生成執行鎖並繼續製作。",
             off_default: "關",
             on: "開",
             option_prefix: "方案",
@@ -789,6 +789,15 @@
     function t(key) {
         var dict = MESSAGES[LANG] || MESSAGES.en;
         return dict[key] != null ? dict[key] : key;
+    }
+
+    // zh / zh-TW / ja text takes a full-width colon and no space between sentences.
+    function isCjkUi() {
+        return LANG === "zh" || LANG === "zh-TW" || LANG === "ja";
+    }
+
+    function labelSep() {
+        return isCjkUi() ? "：" : ": ";
     }
 
     // Preserve the existing locale order, then accept zh_tw-only candidate
@@ -1037,7 +1046,7 @@
         var value = String(id || "").trim();
         if (!value || value === "custom") return "";
         if (!/^[A-Za-z0-9_.-]+$/.test(value)) return "";
-        return "/ai-image-comparison/" + kind + "/" + encodeURIComponent(value) + ".png";
+        return "/ai-image-comparison/" + kind + "/" + encodeURIComponent(value) + ".webp";
     }
 
     function appendImageStrategyPreviews(card, candidate) {
@@ -1534,7 +1543,7 @@
                 label = label + (o.dim ? " · " + o.dim : "");
             } else {
                 if (o.dim) label += " · " + o.dim;
-                if (desc) label += (LANG === "zh" || LANG === "ja" ? "：" : " — ") + desc;
+                if (desc) label += (isCjkUi() ? "：" : " — ") + desc;
                 if (spec && spec.note) label += " · " + spec.note;
             }
             copy.appendChild(el("span", "chip-text", label));
@@ -3303,15 +3312,16 @@
         // Everything is px — lo/hi are only a sanity envelope for the OOR flag.
         refreshBodySizeHint = function () {
             var txt = t("font_body_size_hint");
+            var sep = isCjkUi() ? "" : " ";
             var lo, hi;
             if (isPptCanvas(STATE.canvas)) {
                 var pb = deliveryBodyPx(STATE.delivery_purpose);
                 lo = pb.lo; hi = pb.hi;
-                txt += " " + t("body_size_hint_purpose").replace("{def}", pb.def);
+                txt += sep + t("body_size_hint_purpose").replace("{def}", pb.def);
             } else {
                 var band = bodySizeBandForCanvas(STATE.canvas, STATE.delivery_purpose);
                 lo = band.lo; hi = band.hi;
-                txt += " " + t("body_size_hint_canvas")
+                txt += sep + t("body_size_hint_canvas")
                     .replace("{lo}", lo).replace("{hi}", hi);
             }
             // Flag (hint only) a value far outside the
@@ -3322,7 +3332,7 @@
                 ? t("body_size_pt_hint").replace("{pt}", formatPtFromPx(cur))
                 : "";
             if (isFinite(cur) && isFinite(lo) && isFinite(hi) && (cur < lo || cur > hi)) {
-                txt += " " + t("body_size_hint_oor");
+                txt += sep + t("body_size_hint_oor");
             }
             sizeHint.textContent = txt;
         };
@@ -3552,11 +3562,11 @@
                         t("image_strategy_select_placeholder")));
             var parts = [];
             if (strategy.rendering) {
-                parts.push(t("image_strategy_rendering") + ": " +
+                parts.push(t("image_strategy_rendering") + labelSep() +
                     comparisonValueLabel("rendering", strategy.rendering));
             }
-            if (strategy.visual) parts.push(t("image_strategy_visual") + ": " + strategy.visual);
-            if (strategy.mood) parts.push(t("image_strategy_mood") + ": " + strategy.mood);
+            if (strategy.visual) parts.push(t("image_strategy_visual") + labelSep() + strategy.visual);
+            if (strategy.mood) parts.push(t("image_strategy_mood") + labelSep() + strategy.mood);
             if (strategy.behavior) parts.push(strategy.behavior);
             desc.textContent = parts.join(" · ") || t("image_strategy_reference_hint");
         }
@@ -3714,7 +3724,7 @@
                 ["image_strategy_visual", customStrategy.visual],
                 ["image_strategy_mood", customStrategy.mood]
             ].forEach(function (row) {
-                if (row[1]) customCard.appendChild(el("div", "color-note", t(row[0]) + "：" + row[1]));
+                if (row[1]) customCard.appendChild(el("div", "color-note", t(row[0]) + labelSep() + row[1]));
             });
             var customCopy = el("div", "ai-custom-candidate-copy",
                 customStrategy.behavior || t("image_strategy_custom_placeholder"));
@@ -3812,7 +3822,7 @@
         (CAT.image_usage || []).forEach(function (option) {
             var label = optionLabel(option);
             var desc = optionDesc(option);
-            if (desc) label += (LANG === "zh" || LANG === "ja" ? "：" : " — ") + desc;
+            if (desc) label += (isCjkUi() ? "：" : " — ") + desc;
             var chip = el("div", "chip");
             chip.appendChild(el("span", "chip-text", label));
             if (recommendedIds.indexOf(option.id) >= 0) {
@@ -4407,6 +4417,7 @@
         document.getElementById("sections").style.display = "none";
         document.getElementById("actionbar").style.display = "none";
         var l = document.getElementById("loading");
+        l.setAttribute("data-i18n", "deriving");
         l.textContent = t("deriving");
         l.style.display = "block";
     }
@@ -4536,7 +4547,7 @@
         if (requested !== "zh" && requested !== "en" && requested !== "ja" &&
                 requested !== "zh-TW") return;
         var hasStored = false;
-        try { hasStored = !!window.localStorage.getItem("ppt_lang"); } catch (e) { /* ignore */ }
+        try { hasStored = ["zh", "en", "ja", "zh-TW"].indexOf(window.localStorage.getItem("ppt_lang")) >= 0; } catch (e) { /* ignore */ }
         if (hasStored) return;
         LANG = requested;
         applyStaticTranslations();
@@ -4587,11 +4598,12 @@
             setMenuOpen(false);
             toggleBtn.focus();
             if (v !== "ja" && v !== "en" && v !== "zh" && v !== "zh-TW") return;
+            try { window.localStorage.setItem("ppt_lang", v); } catch (e2) { /* ignore */ }
             if (v === LANG) return;
             LANG = v;
-            try { window.localStorage.setItem("ppt_lang", LANG); } catch (e2) { /* ignore */ }
             applyStaticTranslations();
             refreshLangToggle(toggleBtn);
+            document.getElementById("confirm-status").textContent = "";
             if (REC && CAT) {
                 renderAll();   // STATE persists → selections preserved
             }

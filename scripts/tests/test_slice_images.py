@@ -250,6 +250,131 @@ class SliceImagesDiagnosticsTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(Image.open(output_dir / "mark.png").size, (41, 41))
 
+    def test_uneven_key_ground_is_keyed_by_dominance_without_eating_thin_strokes(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sheet_path = root / "sheet.png"
+            output_dir = root / "output"
+            size = 400
+            rng = np.random.default_rng(7)
+            yy, xx = np.mgrid[0:size, 0:size]
+            t = (xx + yy) / (2 * size)
+            # A generated key painted as a gradient with grain: #00FF00 -> #25D23A.
+            ground = np.stack([37 * t, 255 - 45 * t, 58 * t], axis=2)
+            ground += rng.normal(0, 3.0, ground.shape)
+            scale = 4
+            ink = Image.new("L", (size * scale, size * scale), 0)
+            draw = ImageDraw.Draw(ink)
+            for index in range(9):
+                offset = (110 + index * 22) * scale
+                draw.line([(100 * scale, offset), (300 * scale, offset)], fill=255, width=scale)
+                draw.line([(offset, 100 * scale), (offset, 300 * scale)], fill=255, width=scale * 2)
+            ink = ink.resize((size, size), Image.LANCZOS)
+            coverage = np.asarray(ink, dtype=np.float32)[..., None] / 255
+            sheet = ground * (1 - coverage) + np.array([18, 18, 18]) * coverage
+            Image.fromarray(np.clip(sheet, 0, 255).astype(np.uint8), "RGB").save(sheet_path)
+
+            slice_sheet(
+                sheet_path, 1, 1, output_dir, names=["lines"],
+                alpha=True, strict_alpha=True, bg=(0, 255, 0),
+            )
+
+            cut = np.asarray(Image.open(output_dir / "lines.png").convert("RGBA"), dtype=np.float32)
+            alpha = cut[..., 3] / 255
+            reference = coverage[..., 0]
+            self.assertGreater(alpha[reference > 0.9].mean(), 0.95)
+            self.assertLess(alpha[reference < 0.02].mean(), 0.01)
+            opaque = alpha > 0.8
+            key_tinted = opaque & (cut[..., 1] > cut[..., 0] + 30) & (cut[..., 1] > cut[..., 2] + 30)
+            self.assertEqual(int(key_tinted.sum()), 0)
+
+    def test_pure_key_light_edge_and_warm_shadow_leave_no_green_or_magenta_fringe(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sheet_path = root / "sheet.png"
+            image = Image.new("RGB", (200, 200), (0, 255, 0))
+            draw = ImageDraw.Draw(image)
+            # A warm shadow at 40% over the key, then a cream disc whose edge
+            # rings with a light key-tinted line, as a compressed render leaves it.
+            draw.ellipse((66, 66, 156, 156), fill=(16, 165, 12))
+            draw.ellipse((49, 49, 151, 151), fill=(223, 255, 206))
+            draw.ellipse((50, 50, 150, 150), fill=(245, 237, 218))
+            image.save(sheet_path)
+
+            slice_sheet(
+                sheet_path, 1, 1, root / "out", names=["disc"],
+                alpha=True, strict_alpha=True, bg=(0, 255, 0), tolerance=40,
+            )
+
+            cut = np.asarray(Image.open(root / "out" / "disc.png").convert("RGBA"), dtype=np.int16)
+            red, green, blue, alpha = (cut[..., index] for index in range(4))
+            key_tinted = (alpha >= 128) & (green > np.maximum(red, blue) + 30)
+            magenta = (alpha >= 64) & (green + 30 < np.minimum(red, blue))
+            self.assertEqual(int(key_tinted.sum()), 0)
+            self.assertEqual(int(magenta.sum()), 0)
+            self.assertEqual(tuple(cut[100, 100]), (245, 237, 218, 255))
+            shadow = cut[140, 140]
+            self.assertTrue(80 <= shadow[3] <= 110, shadow)
+            self.assertLessEqual(int(shadow[:3].max() - shadow[:3].min()), 12)
+
+    def test_off_key_flat_ground_with_cast_shadow_is_keyed_by_dominance(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sheet_path = root / "sheet.png"
+            ground = (94, 222, 81)
+            image = Image.new("RGB", (240, 240), ground)
+            draw = ImageDraw.Draw(image)
+            # A contact shadow cast on the painted ground: dark ground, not key.
+            draw.rectangle((70, 70, 190, 190), fill=(47, 111, 40))
+            draw.rectangle((60, 60, 170, 170), fill=(150, 90, 60))
+            image.save(sheet_path)
+
+            slice_sheet(
+                sheet_path, 1, 1, root / "out", names=["block"],
+                trim=True, alpha=True, strict_alpha=True,
+            )
+
+            cut = np.asarray(Image.open(root / "out" / "block.png").convert("RGBA"), dtype=np.int16)
+            red, green, blue, alpha = (cut[..., index] for index in range(4))
+            key_tinted = (alpha >= 128) & (green > np.maximum(red, blue) + 30)
+            self.assertEqual(int(key_tinted.sum()), 0)
+            self.assertEqual(tuple(cut[50, 50]), (150, 90, 60, 255))
+            self.assertLess(int(alpha[-5:, -5:].max()), 200)
+
+    def test_glow_tail_in_margin_over_on_key_ground_is_not_haze(self) -> None:
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sheet_path = root / "sheet.png"
+            size = 200
+            yy, xx = np.mgrid[0:size, 0:size]
+            radius = np.hypot(xx - 100, yy - 100)
+            # A pale disc whose soft glow fades into the key-only margin.
+            coverage = np.where(radius <= 40, 1.0, np.clip(1 - (radius - 40) / 70, 0, 1) * 0.35)
+            ground = np.array([2.0, 8.0, 254.0])
+            sheet = ground * (1 - coverage[..., None]) + np.array([235.0, 225.0, 200.0]) * coverage[..., None]
+            Image.fromarray(sheet.astype(np.uint8), "RGB").save(sheet_path)
+
+            for bg in ((0, 0, 255), (2, 8, 254)):
+                with self.subTest(bg=bg):
+                    out = root / f"out_{bg[0]}"
+                    slice_sheet(
+                        sheet_path, 1, 1, out, names=["moon"],
+                        alpha=True, strict_alpha=True, bg=bg, tolerance=18,
+                    )
+                    cut = np.asarray(Image.open(out / "moon.png").convert("RGBA"), dtype=np.int16)
+                    red, green, blue, alpha = (cut[..., index] for index in range(4))
+                    # A measured near-key ground still despills: the glow is not blue.
+                    bluish = (alpha >= 40) & (blue > np.maximum(red, green) + 30)
+                    self.assertEqual(int(bluish.sum()), 0)
+
     def test_strict_alpha_names_painted_card_cells_instead_of_a_key_rerun(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

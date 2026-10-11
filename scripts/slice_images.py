@@ -73,6 +73,13 @@ _KEY_DRIFT_MARGIN = 4
 # green key), not a semi-transparent blend with the key; color-to-alpha recovery
 # and despill skip it so the element keeps its own color.
 _KEY_PURITY_OPAQUE_RATIO = 0.6
+# An element edge blended with the key can keep enough non-key channel to pass
+# as opaque (a cream or teal edge over green). Within this radius of recovered
+# ground, a pixel whose key dominance rises this far above the lowest in its
+# neighbourhood is recovered as a blend; a hard edge of a key-hued colour has
+# no such rise and stays opaque.
+_KEY_EDGE_RADIUS = 2
+_KEY_EDGE_MIN_RISE = 16
 # At most this many trim pixels on a touched edge count as isolated drift.
 _EDGE_DRIFT_MAX_PIXELS = 8
 # Semi-transparent coverage nominates a haze candidate; only a failed key-only
@@ -80,6 +87,15 @@ _EDGE_DRIFT_MAX_PIXELS = 8
 _HAZE_ALPHA_LOW = 20
 _HAZE_ALPHA_HIGH = 150
 _HAZE_MAX_SHARE = 0.15
+# An uneven key ground (gradient, lighting, texture) is keyed by key-channel
+# dominance against a local ground estimate instead of distance to one colour.
+_UNEVEN_RING_RATIO = 0.01
+_UNEVEN_MIN_DOMINANCE = 48
+_UNEVEN_RING_KEY_SHARE = 0.98
+_UNEVEN_RING_DOMINANCE_RANGE = 32
+_UNEVEN_TRIM_ALPHA = 8
+_UNEVEN_ESTIMATE_SIDE = 96
+_UNEVEN_ESTIMATE_WINDOW = 15
 # Corner sample inset (px) and minimum cell fill for the backing-panel notice.
 _PANEL_CORNER_INSET = 2
 _PANEL_MIN_FILL = 0.75
@@ -299,55 +315,38 @@ def _nearest_pure_key(
     return best
 
 
-def _channel_alpha(channel: Image.Image, bg_value: int) -> Image.Image:
-    """Return the minimum alpha that can explain one channel over a key."""
-    lut = []
-    for value in range(256):
-        if value > bg_value:
-            denominator = 255 - bg_value
-            alpha = 255 if denominator == 0 else round(
-                (value - bg_value) * 255 / denominator
-            )
-        elif value < bg_value:
-            alpha = 255 if bg_value == 0 else round(
-                (bg_value - value) * 255 / bg_value
-            )
-        else:
-            alpha = 0
-        lut.append(alpha)
-    return channel.point(lut)
+def _key_edge_band(dominance: Image.Image, ground: Image.Image) -> Image.Image:
+    """Mask element edge pixels blended with the key that the purity ratio keeps opaque."""
+    size = 2 * _KEY_EDGE_RADIUS + 1
+    rise = ImageChops.subtract(dominance, dominance.filter(ImageFilter.MinFilter(size)))
+    rising = rise.point(lambda value: 255 if value >= _KEY_EDGE_MIN_RISE else 0)
+    return ImageChops.multiply(rising, ground.filter(ImageFilter.MaxFilter(size)))
 
 
-def _chroma_alpha(rgb: Image.Image, bg: tuple[int, int, int]) -> Image.Image:
-    """Recover foreground opacity for a pure single-channel chroma key.
+def _pure_key_recovery(rgb: Image.Image, key_index: int) -> tuple[Image.Image, Image.Image]:
+    """Recover opacity and colour over a pure single-channel chroma key.
 
-    A non-key-dominant pixel is treated as opaque foreground. A key-dominant
-    pixel uses color-to-alpha recovery, which preserves soft shadows, glows,
-    and antialiased edges without making an ordinary solid foreground color
-    unnecessarily translucent.
+    A key blend takes the minimum opacity that explains every channel, which
+    preserves soft shadows, glows, and antialiased edges without making a solid
+    foreground translucent. Un-premultiplying cannot recover the key channel,
+    so the foreground's key channel is taken as its strongest non-key channel:
+    spill leaves the edge, and a soft shadow comes back grey instead of tinted
+    with the key's complement. A non-key-dominant pixel, or an opaque colour
+    that merely shares the key's hue, keeps full opacity and its own colour.
     """
     channels = rgb.split()
-    channel_alphas = [
-        _channel_alpha(channel, bg_value)
-        for channel, bg_value in zip(channels, bg)
-    ]
-    raw_alpha = ImageChops.lighter(
-        ImageChops.lighter(channel_alphas[0], channel_alphas[1]),
-        channel_alphas[2],
-    )
-    key_index = _pure_chroma_channel(bg)
-    if key_index is None:
-        return raw_alpha
-
-    other_channels = [
-        channel for index, channel in enumerate(channels) if index != key_index
-    ]
-    key_blend = _key_blend_mask(
-        channels[key_index],
-        ImageChops.lighter(other_channels[0], other_channels[1]),
-    )
-    opaque = Image.new("L", rgb.size, 255)
-    return Image.composite(raw_alpha, opaque, key_blend)
+    key = channels[key_index]
+    others = [channel for index, channel in enumerate(channels) if index != key_index]
+    other = ImageChops.lighter(others[0], others[1])
+    blend = _key_blend_mask(key, other)
+    raw_alpha = ImageChops.lighter(other, ImageChops.invert(key))
+    ground = ImageChops.multiply(blend, raw_alpha.point(lambda value: 255 if value < 128 else 0))
+    recover = ImageChops.lighter(blend, _key_edge_band(ImageChops.subtract(key, other), ground))
+    alpha = Image.composite(raw_alpha, Image.new("L", rgb.size, 255), recover)
+    unmixed = [_decontaminate_channel(channel, alpha, 0) for channel in others]
+    key_out = Image.composite(ImageChops.lighter(unmixed[0], unmixed[1]), key, recover)
+    out = [key_out if index == key_index else unmixed.pop(0) for index in range(3)]
+    return alpha, Image.merge("RGB", out)
 
 
 def _key_blend_mask(key_channel: Image.Image, other_max: Image.Image) -> Image.Image:
@@ -407,19 +406,167 @@ def _decontaminate_channel(
     )
 
 
-def _decontaminate_rgb(
-    rgb: Image.Image,
-    alpha: Image.Image,
-    bg: tuple[int, int, int],
-) -> Image.Image:
-    """Recover foreground RGB values from a composited pure chroma key."""
-    return Image.merge(
-        "RGB",
-        tuple(
-            _decontaminate_channel(channel, alpha, bg_value)
-            for channel, bg_value in zip(rgb.split(), bg)
-        ),
+def _key_hue_channel(bg: tuple[int, int, int]) -> Optional[int]:
+    """Return the channel a key-hued ground is dominated by, if any."""
+    index = max(range(3), key=lambda channel: bg[channel])
+    others = max(bg[channel] for channel in range(3) if channel != index)
+    if bg[index] - others < _UNEVEN_MIN_DOMINANCE:
+        return None
+    if others >= bg[index] * _KEY_PURITY_OPAQUE_RATIO:
+        return None
+    return index
+
+
+def _sheet_keys_by_dominance(sheet: Image.Image, bg: Optional[tuple[int, int, int]]) -> bool:
+    """Tell whether the sheet's key-hued ground needs dominance keying.
+
+    It does when the outer gutter is not flat, or when the ground sits farther
+    from every pure key than drift explains: such a ground gets no pure-key
+    recovery, and one-colour distance leaves shadows cast on it as opaque
+    key-tinted blotches.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+    pixels = np.asarray(sheet.convert("RGB"), dtype=np.int16)
+    height, width = pixels.shape[:2]
+    ring_y = max(_BG_SAMPLE_BORDER, round(height * _UNEVEN_RING_RATIO))
+    ring_x = max(_BG_SAMPLE_BORDER, round(width * _UNEVEN_RING_RATIO))
+    if ring_y * 2 >= height or ring_x * 2 >= width:
+        return False
+    ring = np.ones((height, width), dtype=bool)
+    ring[ring_y:height - ring_y, ring_x:width - ring_x] = False
+    ring_pixels = pixels[ring]
+    ground = bg if bg is not None else tuple(int(v) for v in np.median(ring_pixels, axis=0))
+    key_index = _key_hue_channel(ground)  # type: ignore[arg-type]
+    if key_index is None:
+        return False
+    other = np.delete(ring_pixels, key_index, axis=1).max(axis=1)
+    dominance = np.clip(ring_pixels[:, key_index] - other, 0, 255)
+    keyed = (dominance >= _UNEVEN_MIN_DOMINANCE) & (
+        other < ring_pixels[:, key_index] * _KEY_PURITY_OPAQUE_RATIO
     )
+    if keyed.mean() < _UNEVEN_RING_KEY_SHARE:
+        return False
+    if _nearest_pure_key(ground) is None:  # type: ignore[arg-type]
+        return True
+    low, high = np.percentile(dominance[keyed], (1, 99))
+    return bool(high - low > _UNEVEN_RING_DOMINANCE_RANGE)
+
+
+def _dominance_masks(
+    rgb: Image.Image,
+    bg: tuple[int, int, int],
+    tolerance: int,
+    uneven_sheet: bool = False,
+) -> Optional[tuple[Image.Image, Image.Image, Image.Image, Image.Image]]:
+    """Key an uneven key-hued ground by key-channel dominance, or return None.
+
+    A generated sheet often paints its key as a gradient or textured field, so
+    no single colour with any tolerance separates it: a tolerance wide enough
+    to clear the dark end also eats thin strokes and leaves their edges
+    key-tinted. The ground's invariant is that the key channel dominates the
+    other two, whatever its brightness. Each pixel's dominance is compared with
+    a local estimate of the ground's dominance; the shortfall is its opacity,
+    and colour is un-premultiplied against the same local ground.
+
+    Applies only when the cell's outer ring is a clean key-hued gutter and the
+    ground is not flat in this cell, or when ``uneven_sheet`` says the sheet
+    needs it (``_sheet_keys_by_dominance``), so every cell of one sheet is keyed
+    the same way.
+    """
+    key_index = _key_hue_channel(bg)
+    if key_index is None:
+        return None
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+
+    pixels = np.asarray(rgb, dtype=np.int16)
+    height, width = pixels.shape[:2]
+    other_indexes = [channel for channel in range(3) if channel != key_index]
+    key = pixels[..., key_index]
+    other = pixels[..., other_indexes].max(axis=2)
+    dominance = np.clip(key - other, 0, 255)
+
+    ring_y = max(_BG_SAMPLE_BORDER, round(height * _UNEVEN_RING_RATIO))
+    ring_x = max(_BG_SAMPLE_BORDER, round(width * _UNEVEN_RING_RATIO))
+    if ring_y * 2 >= height or ring_x * 2 >= width:
+        return None
+    ring = np.ones((height, width), dtype=bool)
+    ring[ring_y:height - ring_y, ring_x:width - ring_x] = False
+    ring_pixels = pixels[ring]
+    ring_dominance = dominance[ring]
+    ring_other = other[ring]
+    keyed = (ring_dominance >= _UNEVEN_MIN_DOMINANCE) & (
+        ring_other < ring_pixels[:, key_index] * _KEY_PURITY_OPAQUE_RATIO
+    )
+    if keyed.mean() < _UNEVEN_RING_KEY_SHARE:
+        return None
+    # Uneven means the gutter spans a dominance range no flat field with
+    # compression noise produces. A flat ground that merely differs from the
+    # stated key is not this case: it keeps the single-colour path, which
+    # rejects it and names the measured colour to rerun with.
+    low, high = np.percentile(ring_dominance[keyed], (1, 99))
+    if not uneven_sheet and high - low <= _UNEVEN_RING_DOMINANCE_RANGE:
+        return None
+
+    # Local ground dominance: the brightest dominance in each neighbourhood is
+    # ground wherever the neighbourhood holds any; a floor covers the interior
+    # of a large element, where the estimate does not change the result.
+    scale = max(1, max(width, height) // _UNEVEN_ESTIMATE_SIDE)
+    small_size = (max(1, width // scale), max(1, height // scale))
+    dominance_image = Image.fromarray(dominance.astype(np.uint8), "L")
+    estimate = (
+        dominance_image.resize(small_size, Image.BOX)
+        .filter(ImageFilter.MaxFilter(_UNEVEN_ESTIMATE_WINDOW))
+        .filter(ImageFilter.GaussianBlur(_UNEVEN_ESTIMATE_WINDOW // 4))
+        .resize((width, height), Image.BILINEAR)
+    )
+    floor = max(_UNEVEN_MIN_DOMINANCE, int(np.median(ring_dominance[keyed])) // 2)
+    ground = np.maximum(np.asarray(estimate, dtype=np.float32), floor)
+
+    shortfall = np.clip(ground - dominance, 0, None)
+    # The gutter holds ground only, so its own shortfall is the field's grain:
+    # the gate clears that grain even when it exceeds the stated tolerance.
+    gate = max(float(tolerance), float(np.percentile(shortfall[ring][keyed], 99.5)) + 2.0)
+    span = np.maximum(ground - gate, 1.0)
+    opacity = np.clip((shortfall - gate) / span, 0.0, 1.0)
+    # A colour that merely shares the key's hue keeps a substantial non-key
+    # channel and stays opaque, as in the pure-key path.
+    blend = (key > other) & (other < key * _KEY_PURITY_OPAQUE_RATIO)
+    ground_like = Image.fromarray(np.where(blend & (opacity < 0.5), 255, 0).astype(np.uint8), "L")
+    band = _key_edge_band(Image.fromarray(dominance.astype(np.uint8), "L"), ground_like)
+    blend |= np.asarray(band) > 0
+    opacity = np.where(blend, opacity, 1.0)
+
+    ground_colour = np.median(ring_pixels[keyed], axis=0).astype(np.float32)
+    ground_other = float(max(ground_colour[channel] for channel in other_indexes))
+    backdrop = np.empty(pixels.shape, dtype=np.float32)
+    for channel in range(3):
+        backdrop[..., channel] = (
+            ground + ground_other if channel == key_index else ground_colour[channel]
+        )
+    safe = np.maximum(opacity, 1 / 255)[..., None]
+    colour = (pixels - (1.0 - opacity[..., None]) * backdrop) / safe
+    colour = np.clip(colour, 0, 255)
+    # Un-premultiplying cannot recover the key channel of a blended pixel, so
+    # it takes the strongest non-key channel, as in the pure-key path: spill
+    # leaves the edge and a shadow stays grey instead of the key's complement.
+    edge = blend & (opacity < 1.0)
+    limit = colour[..., other_indexes].max(axis=2)
+    colour[..., key_index] = np.where(edge, limit, colour[..., key_index])
+
+    alpha_mask = Image.fromarray(np.rint(opacity * 255).astype(np.uint8), "L")
+    # The gate is a percentile of the gutter's grain, so a few ground pixels sit
+    # just above it; they are not content and must not reach the trim box.
+    trim_mask = alpha_mask.point(lambda value: 255 if value > _UNEVEN_TRIM_ALPHA else 0)
+    distance = np.where(blend, np.clip(shortfall, 0, 255), 255)
+    diff = Image.fromarray(distance.astype(np.uint8), "L")
+    keyed_rgb = Image.fromarray(np.rint(colour).astype(np.uint8), "RGB")
+    return trim_mask, alpha_mask, keyed_rgb, diff
 
 
 def _soft_mask_from_diff(diff: Image.Image, tolerance: int) -> Image.Image:
@@ -445,16 +592,34 @@ def _content_masks(
     cell: Image.Image,
     bg: tuple[int, int, int],
     tolerance: int,
+    notices: Optional[list[str]] = None,
+    uneven_sheet: bool = False,
 ) -> tuple[Image.Image, Image.Image, Optional[Image.Image], Image.Image]:
     """Build trim/alpha masks, optional chroma-decontaminated RGB, and the key diff."""
     rgb = cell.convert("RGB")
+    uneven = _dominance_masks(rgb, bg, tolerance, uneven_sheet)
+    if uneven is not None:
+        if notices is not None:
+            notices.append(
+                "the key ground is uneven (gradient, lighting, or texture) or off every "
+                "pure key; keyed by key-channel dominance against the local ground "
+                "instead of one colour — "
+                "inspect the cut elements"
+            )
+        return uneven
     diff = _max_channel_difference(rgb, bg)
     trim_mask = diff.point(lambda p: 255 if p > tolerance else 0)
     tolerance_gate = _soft_mask_from_diff(diff, tolerance)
-    if _pure_chroma_channel(bg) is not None:
-        chroma_alpha = _chroma_alpha(rgb, bg)
+    key_index = _pure_chroma_channel(bg)
+    if key_index is None:
+        # A measured ground within drift of a pure key is that key drifted;
+        # it keeps pure-key recovery, gated by distance to the measured ground.
+        drifted = _nearest_pure_key(bg)
+        if drifted is not None:
+            key_index = _pure_chroma_channel(drifted[0])
+    if key_index is not None:
+        chroma_alpha, keyed_rgb = _pure_key_recovery(rgb, key_index)
         alpha_mask = ImageChops.multiply(chroma_alpha, tolerance_gate)
-        keyed_rgb = _decontaminate_rgb(rgb, chroma_alpha, bg)
         return trim_mask, alpha_mask, keyed_rgb, diff
 
     alpha_mask = tolerance_gate.filter(ImageFilter.MinFilter(3))
@@ -562,6 +727,7 @@ def _haze_finding(
     *,
     cell: Image.Image,
     tolerance: int,
+    uneven: bool = False,
 ) -> Optional[str]:
     """Report semi-transparent haze only when the key-only margins are off-key.
 
@@ -580,11 +746,33 @@ def _haze_finding(
     share = hazy / total
     if share <= _HAZE_MAX_SHARE:
         return None
+    if uneven:
+        # Dominance keying has no single stated colour to compare with: the
+        # four key-only margins must simply have come back transparent.
+        width, height = alpha_mask.size
+        margin_x, margin_y = max(1, round(width * 0.10)), max(1, round(height * 0.10))
+        margins = [
+            alpha_mask.crop((0, 0, width, margin_y)),
+            alpha_mask.crop((0, height - margin_y, width, height)),
+            alpha_mask.crop((0, 0, margin_x, height)),
+            alpha_mask.crop((width - margin_x, 0, width, height)),
+        ]
+        total_margin = sum(part.width * part.height for part in margins)
+        residue = sum(sum(part.histogram()[_HAZE_ALPHA_LOW:]) for part in margins)
+        if residue / total_margin <= _HAZE_MAX_SHARE:
+            return None
+        return (
+            f"{label}: {residue / total_margin:.0%} of the four 10% key-only margins "
+            "stayed visible after dominance keying of an uneven ground: an effect or "
+            "the ground's lighting occupies the margin; regenerate with clear margins"
+        )
     dominant, spread, distance = _sample_sheet_border(
         cell, border_ratio=0.10, key=bg,
     )
     dominant_distance = max(abs(dominant[index] - bg[index]) for index in range(3))
-    if max(dominant_distance, spread, distance) <= tolerance:
+    # Haze comes from the field itself; a glow or shadow tail entering the
+    # margin over an on-key field recovers as soft alpha and is not haze.
+    if max(dominant_distance, spread) <= tolerance:
         return None
     hex_bg = "#{:02X}{:02X}{:02X}".format(*bg)
     measured_bg = "#{:02X}{:02X}{:02X}".format(*dominant)
@@ -798,6 +986,7 @@ def slice_sheet(
     with Image.open(sheet_path) as source:
         sheet = ImageOps.exif_transpose(source).convert("RGBA")
     sw, sh = sheet.size
+    uneven_sheet = (trim or alpha) and _sheet_keys_by_dominance(sheet, bg)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     stem = sheet_path.stem
@@ -825,8 +1014,12 @@ def slice_sheet(
             bbox = None
             if trim or alpha:
                 cell_bg = bg if bg is not None else _sample_bg(cell, tolerance)
+                cell_notices: list[str] = []
                 trim_mask, alpha_mask, keyed_rgb, diff = _content_masks(
-                    cell, cell_bg, tolerance
+                    cell, cell_bg, tolerance, cell_notices, uneven_sheet
+                )
+                notices.extend(
+                    f"cell ({r},{c}): {notice}" for notice in cell_notices
                 )
                 bbox = trim_mask.getbbox()
                 if bbox is None:
@@ -839,7 +1032,7 @@ def slice_sheet(
                 if strict_alpha:
                     haze = _haze_finding(
                         f"cell ({r},{c})", alpha_mask, bbox, cell_bg,
-                        cell=cell, tolerance=tolerance,
+                        cell=cell, tolerance=tolerance, uneven=bool(cell_notices),
                     )
                     if haze:
                         findings.append(haze)

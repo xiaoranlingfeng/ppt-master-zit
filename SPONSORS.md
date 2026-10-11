@@ -8,7 +8,7 @@ Want to support the project or discuss a partnership? See the [sponsorship guide
 
 ## Current Model Recommendation
 
-For the best results, use **[Kimi K3](https://www.kimi.com/code/?aff=ppt-master)** (or Claude) to drive the workflow, paired with **`gpt-image-2`** (OpenAI) or **`gemini-3.1-flash-image`** (Google) for AI image generation. If model capability is limiting output quality, upgrade the driving model before weakening the workflow or its quality requirements.
+For the best results, use **[Kimi K3](https://www.kimi.com/code/?aff=ppt-master)** (or Claude) to drive the workflow, paired with **`gpt-image-2`** (OpenAI) or **`gemini-nano-banana-2.1`** (Google) for AI image generation. If model capability is limiting output quality, upgrade the driving model before weakening the workflow or its quality requirements.
 
 ## Kimi
 
@@ -18,7 +18,7 @@ For the best results, use **[Kimi K3](https://www.kimi.com/code/?aff=ppt-master)
 
 Thanks to [Kimi](https://www.kimi.com/code/?aff=ppt-master) for sponsoring PPT Master. [Kimi K3](https://platform.kimi.ai/docs/guide/kimi-k3-quickstart) is the world's first open 3T-class model, featuring native vision and a 1-million-token context window. With PPT Master, K3 can understand PDFs, DOCX files, web pages, and other source material, structure the narrative, and generate a natively editable PPTX.
 
-**Try [Kimi Code](https://www.kimi.com/code/?aff=ppt-master), or access the API through the Kimi Open Platform ([中文站](https://platform.kimi.com?aff=ppt-master) | [Global](https://platform.kimi.ai?aff=ppt-master)).**
+**Try a [Kimi Code plan](https://www.kimi.com/code/?aff=ppt-master) ([中文站](https://www.kimi.com/code/?aff=ppt-master) | [Global](https://www.kimi.ai/code/?aff=ppt-master)), or access the API through the Kimi Open Platform ([中文站](https://platform.kimi.com?aff=ppt-master) | [Global](https://platform.kimi.ai?aff=ppt-master)).**
 
 ## Model Access Partners
 
@@ -39,12 +39,6 @@ Thanks to [Kimi](https://www.kimi.com/code/?aff=ppt-master) for sponsoring PPT M
 <a href="https://runapi.host/register?aff=WMLJ"><img src="https://raw.githubusercontent.com/hugohe3/ppt-master/main/docs/assets/sponsors/runapi.png" alt="RunAPI" width="150"></a>
 
 [RunAPI](https://runapi.host/register?aff=WMLJ) provides access to 150+ models, including OpenAI, Claude, Gemini, DeepSeek, and Grok, through one API key. Register through the dedicated link and contact an administrator to claim **¥7 in free credit**.
-
-### YouYun ZhiSuan
-
-<a href="https://www.compshare.cn/coding-plan?ytag=GPU_YY-git_pptmaster0624"><img src="https://raw.githubusercontent.com/hugohe3/ppt-master/main/docs/assets/sponsors/youyun.png" alt="YouYun ZhiSuan" width="150"></a>
-
-[YouYun ZhiSuan](https://www.compshare.cn/coding-plan?ytag=GPU_YY-git_pptmaster0624), UCloud's AI cloud platform, provides domestic and international model APIs, CodingPlan packages, enterprise concurrency, technical support, and invoicing. Register through the dedicated link to receive up to **¥10 in free trial credit**. PPT Master is also available there as a hosted Agent for users who do not want to deploy it locally.
 
 ### APIMart
 

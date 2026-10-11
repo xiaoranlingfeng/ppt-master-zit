@@ -8,7 +8,7 @@ description: >
   Use when the user explicitly asks for ppt-master-qwen-image-2-1 / qwen 版 / zit 版, or wants
   decks whose images come from the local ComfyUI queue.
 metadata:
-  version: "6.6.0"  # base: official ppt-master v6.6.0
+  version: "6.7.0"  # base: official ppt-master v6.7.0
   copyright: "Copyright (c) 2025-2026 Hugo He"
   license: "MIT"
   official_repository: "https://github.com/hugohe3/ppt-master"
