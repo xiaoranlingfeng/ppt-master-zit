@@ -1,4 +1,6 @@
-# ppt-master-qwen-image-2-1
+# ppt-master-comfyui
+
+> Former names 曾用名: `ppt-master-qwen-image-2-1` · `ppt-master-zit` — renamed 2026-10-13; the fork is defined by its local ComfyUI backend, not by any single model.
 
 [English](#english) · [中文](#中文)
 
@@ -12,7 +14,7 @@
 
 ### What differs from upstream
 
-| | Official ppt-master | ppt-master-qwen-image-2-1 |
+| | Official ppt-master | ppt-master-comfyui |
 |---|---|---|
 | Image backend | openai / gemini / qwen and other cloud APIs | all preserved, **plus a new local `comfyui` backend, enabled by default** |
 | Generation engine | cloud models | local ComfyUI = Qwen-Image-2.1 (7B DiT int8 + Qwen3-VL 8B int8); fallback "zit基础" Z-Image Turbo |
@@ -26,9 +28,10 @@ New / modified files:
 - `templates/comfyui/zit_basic_api.json` — legacy "zit基础" workflow (Z-Image Turbo: steps 8 / cfg 1 / res_multistep / simple / shift 3), selectable via `COMFY_WORKFLOW`
 - `scripts/image_gen.py` — registers the `comfyui` backend (aliases: comfy / zit)
 - `references/image-generator.md` §4.5 — prompting rules for the local backend (natural language, 1–4 sentences, mandatory no-text clause)
+- `references/qwen-image-2-1-prompting.md` + `templates/qwen_prompt_skeletons.md` — the official-case prompting manual (decision flow, layered skeleton, text-locked / edit / multi-ref / storyboard recipes, alpha verification discipline) and its five fill-in skeletons, distilled from modelscope.cn/posts/436932
 - `.env.example` / `.gitignore` / `README.md` — local config docs; personal `.env` is never committed
 
-Everything else matches upstream v6.6.0 (including glyph-accurate text measurement, native chart/table mirroring, the multilingual per-script calibration of v6.4.0, the Edit-Native round-trip rework of v6.5.0, and the v6.6.0 end-to-end-run fixes).
+Everything else matches upstream v6.7.0 (including glyph-accurate text measurement, native chart/table mirroring, the multilingual per-script calibration of v6.4.0, the Edit-Native round-trip rework of v6.5.0, and the v6.6.0 end-to-end-run fixes).
 
 ### Quick start
 
@@ -90,7 +93,7 @@ MIT — upstream copyright belongs to [Hugo He](https://github.com/hugohe3/ppt-m
 
 ### 与上游的差异
 
-| 项 | 官方 ppt-master | 本仓库 ppt-master-qwen-image-2-1（原 ppt-master-zit） |
+| 项 | 官方 ppt-master | 本仓库 ppt-master-comfyui（曾用名 ppt-master-qwen-image-2-1、ppt-master-zit） |
 |---|---|---|
 | 图片后端 | openai / gemini / qwen 等云端 API | 全部保留，**新增 `comfyui` 本地后端并默认启用** |
 | 出图引擎 | 云端模型 | 本机 ComfyUI = Qwen-Image-2.1（7B DiT int8 + Qwen3-VL 8B int8）；备选「zit基础」Z-Image Turbo |
@@ -104,9 +107,10 @@ MIT — upstream copyright belongs to [Hugo He](https://github.com/hugohe3/ppt-m
 - `templates/comfyui/zit_basic_api.json` — 旧「zit基础」工作流（Z-Image Turbo：steps 8 / cfg 1 / res_multistep / simple / shift 3），经 `COMFY_WORKFLOW` 切换
 - `scripts/image_gen.py` — 注册 `comfyui` 后端（别名 comfy / zit）
 - `references/image-generator.md` §4.5 — 本地后端的提示词规范（自然语言、1–4 句、强制无文字条款）
+- `references/qwen-image-2-1-prompting.md` + `templates/qwen_prompt_skeletons.md` — 官方示例库 40 余案例拆解出的提示词手册（决策流、分层骨架、文字锁定/编辑/多参考/分镜配方、alpha 验证纪律）及五套可填空骨架，源出 modelscope.cn/posts/436932
 - `.env.example` / `.gitignore` / `README.md` — 本机配置文档；含个人路径的 `.env` 永不入库
 
-其余文件与官方 v6.6.0 一致（含真实字形宽度度量、原生图表/表格镜像导出、v6.4.0 多语种按文字体系的宽度校准、v6.5.0 Edit Native 往返重做、v6.6.0 全流程实测修复等上游能力）。
+其余文件与官方 v6.7.0 一致（含真实字形宽度度量、原生图表/表格镜像导出、v6.4.0 多语种按文字体系的宽度校准、v6.5.0 Edit Native 往返重做、v6.6.0 全流程实测修复等上游能力）。
 
 ### 快速上手
 

@@ -1,12 +1,14 @@
 ---
-name: ppt-master-qwen-image-2-1
+name: ppt-master-comfyui
 description: >
-  PPT Master with local ComfyUI image backend (Qwen-Image-2.1 t2i via
-  localhost:8188; legacy Z-Image Turbo「zit基础」workflow selectable).
+  PPT Master with a local ComfyUI image backend (default workflow Qwen-Image-2.1
+  t2i on localhost:8188; switchable to Z-Image Turbo「zit基础」or any API-format
+  workflow — the fork is defined by the backend, not by a model).
   Same editable-PPTX generation, reconstruction, template,
   and enhancement workflow as ppt-master, but AI 配图默认走本机 ComfyUI.
-  Use when the user explicitly asks for ppt-master-qwen-image-2-1 / qwen 版 / zit 版, or wants
-  decks whose images come from the local ComfyUI queue.
+  Use when the user explicitly asks for ppt-master-comfyui / comfyui 版 or the
+  former names ppt-master-qwen-image-2-1, ppt-master-zit / qwen 版 / zit 版,
+  or wants decks whose images come from the local ComfyUI queue.
 metadata:
   version: "6.7.0"  # base: official ppt-master v6.7.0
   copyright: "Copyright (c) 2025-2026 Hugo He"
