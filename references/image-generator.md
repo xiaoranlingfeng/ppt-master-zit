@@ -235,7 +235,7 @@ user says to switch). Mechanics of running the chosen model:
   (on Windows `cmd`/PowerShell, set the variables with the shell's own syntax).
 
 Prompting rules for this backend (apply in addition to §5; RGBA-specific rules
-are Qwen-Image-2.1 only):
+are Qwen-Image-2.1 only). The underlying writing authority is the official-case prompting manual [`qwen-image-2-1-prompting.md`](qwen-image-2-1-prompting.md), with five fill-in skeletons in [`../templates/qwen_prompt_skeletons.md`](../templates/qwen_prompt_skeletons.md); rules 1–8 below are that manual instantiated for this no-rewrite, cfg=1 deck pipeline — where they conflict, rules 1–8 win:
 
 **House default — 16:9 RGBA.** Every deck raster asset (subject illustration, section art, background decoration) is generated at `--aspect_ratio 16:9`, saved as PNG, and wrapped in the RGBA protocol below, so it carries a real alpha channel and drops onto any slide color without a white box. Only deviate (to opaque full-bleed photographic art) when the plan explicitly says so.
 
