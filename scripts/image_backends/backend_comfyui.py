@@ -70,11 +70,6 @@ from console_encoding import configure_utf8_stdio  # noqa: E402
 
 configure_utf8_stdio()
 
-if __name__ == "__main__":
-    print(__doc__)
-    print("Use via: python3 skills/ppt-master/scripts/image_gen.py \"prompt\" --backend comfyui")
-    raise SystemExit(0 if any(arg in {"-h", "--help", "help"} for arg in sys.argv[1:]) else 1)
-
 import os
 
 import requests
@@ -123,6 +118,9 @@ _AKI_ROOT_CANDIDATES = (
     Path.home() / "ComfyUI-aki-v3",
     Path("D:/ComfyUI-aki-v3"),
     Path("C:/ComfyUI-aki-v3"),
+    Path.home() / "ComfyUI",
+    Path("C:/ComfyUI"),
+    Path("D:/ComfyUI"),
 )
 
 
@@ -319,6 +317,11 @@ def _patch_graph(
             if negative_prompt:
                 node["inputs"]["negative_prompt"] = negative_prompt
 
+    # Negative-prompt scope note: the Qwen-Image-2.1 default template carries
+    # positive+negative inside one TextEncodeQwenImage21 node and runs cfg=1,
+    # where the sampler ignores the negative branch entirely (kept for API
+    # completeness). The CLIPTextEncode sweep below only bites for Z-Image
+    # Turbo / custom templates that wire a second negative encoder node.
     if negative_prompt:
         negatives = [
             nid for nid in _find_nodes(graph, "CLIPTextEncode")
@@ -528,3 +531,9 @@ def generate(prompt: str,
             print(f"\n  [WARN] {exc} Retrying in {delay}s...")
             time.sleep(delay)
     raise RuntimeError(f"Failed after {max_retries + 1} attempts. Last error: {last_error}")
+
+
+if __name__ == "__main__":
+    print(__doc__)
+    print("Use via: python3 skills/ppt-master/scripts/image_gen.py \"prompt\" --backend comfyui")
+    raise SystemExit(0 if any(arg in {"-h", "--help", "help"} for arg in sys.argv[1:]) else 1)

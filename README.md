@@ -2,6 +2,8 @@
 
 > Former names 曾用名: `ppt-master-qwen-image-2-1` · `ppt-master-zit` — renamed 2026-10-13; the fork is defined by its local ComfyUI backend, not by any single model.
 
+> **Upstream lock 上游锁定**: this fork is rebased onto official ppt-master **v6.7.0** (MIT, Hugo He). Fork releases are tagged `v<upstream>-comfyui.<n>` (e.g. `v6.7.0-comfyui.1`); pin those tags instead of `main` if you need a stable point. A GitHub Actions `smoke` workflow runs the GPU-free backend unit tests on every push to `scripts/`.
+
 [English](#english) · [中文](#中文)
 
 ---
@@ -29,6 +31,7 @@ New / modified files:
 - `scripts/image_gen.py` — registers the `comfyui` backend (aliases: comfy / zit)
 - `references/image-generator.md` §4.5 — prompting rules for the local backend (natural language, 1–4 sentences, mandatory no-text clause)
 - `references/qwen-image-2-1-prompting.md` + `templates/qwen_prompt_skeletons.md` — the official-case prompting manual (decision flow, layered skeleton, text-locked / edit / multi-ref / storyboard recipes, alpha verification discipline) and its five fill-in skeletons, distilled from modelscope.cn/posts/436932
+- `scripts/test_backend_comfyui_smoke.py` + `.github/workflows/smoke.yml` — GPU-free unit tests (dimension resolution, placeholder injection, backend registry) run on every push to `scripts/`
 - `.env.example` / `.gitignore` / `README.md` — local config docs; personal `.env` is never committed
 
 Everything else matches upstream v6.7.0 (including glyph-accurate text measurement, native chart/table mirroring, the multilingual per-script calibration of v6.4.0, the Edit-Native round-trip rework of v6.5.0, and the v6.6.0 end-to-end-run fixes).

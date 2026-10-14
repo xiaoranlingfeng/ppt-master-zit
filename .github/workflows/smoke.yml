@@ -1,0 +1,25 @@
+name: smoke
+
+on:
+  push:
+    paths:
+      - "scripts/**"
+      - ".github/workflows/smoke.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  backend-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install minimal deps
+        run: python -m pip install --no-deps requests
+      - name: Byte-compile scripts
+        run: python -m compileall -q scripts
+      - name: Backend smoke tests (no GPU, no ComfyUI server)
+        working-directory: scripts
+        run: python test_backend_comfyui_smoke.py -v
