@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install minimal deps
-        run: python -m pip install --no-deps requests
+        run: python -m pip install requests
       - name: Byte-compile scripts
         run: python -m compileall -q scripts
       - name: Backend smoke tests (no GPU, no ComfyUI server)
