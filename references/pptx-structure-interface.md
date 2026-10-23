@@ -70,6 +70,21 @@ Every new SVG project declares one deterministic route:
 
 **Text carriers**: a multiline placeholder stays one native text frame, so leave strict-line text Slide-local when separate frames are required. Leave a carrier empty or whitespace-only when the placeholder must be visually blank — export materializes an invisible run; never insert a dummy dash, sub-1pt text, or an opacity-hidden glyph. A materialized mirror carrier may keep the source `data-pptx-frame`; do not add it to an authored `standard` / `fidelity` carrier merely to duplicate its bounds. `object` is the generic content slot; `media` binds an authored image/crop and does not synthesize video or audio from a decorative group.
 
+**Multiline content inside a slot**: one placeholder converts to exactly one native shape, so a slot holding several separately-positioned lines may not hold them as sibling `<text>` elements — export fails with *converted to N native children*. Two valid forms:
+
+- **One editable frame** — keep the lines as `dy`-stacked `<tspan>` runs inside the single carrier, and set the run fonts so PowerPoint's re-wrap cannot overflow. This is the default for prose.
+- **Strict lines** — put only line one in the slot and author the remaining lines as a separate Slide-local group beside it, so each stays an independent frame.
+
+Inside that frame the SVG line gap becomes paragraph spacing; a large authored gap renders as a visibly uneven line pitch and can push the last line into the block below. When the visual needs a fixed line pitch, author one `<text>` per line at absolute `y` — as Slide-local content, or as the slot's single carrier when the slot owns exactly one line.
+
+**Layout identity is structural, not visual**: everything marked `data-pptx-layer="master"` / `"layout"` is a reusable fixed atom. Its paint may be re-skinned freely, but its **geometry, `data-pptx-*` metadata, and sibling order must equal the prototype on every slide sharing that Layout** — including across unrelated slides. Two consequences that surface late:
+
+- Changing an atom's shape (a prototype `<rect rx="16">` authored as `rx="12"`), its size, or its position, breaks reuse with *structure differs from prototype*.
+- A slide that stops using one of the prototype's atoms (a full-canvas picture panel the page no longer needs) breaks reuse with *structure differs* too. Map such a page to a prototype it still matches, or declare a new Layout key in the lock and point `page_pptx_layouts` at it.
+
+Root modules are content units: every visible top-level `<g>` needs `data-pptx-bounds`, and two sibling root modules may not overlap by more than 1 px — a full-canvas background group is therefore not a root module, but a `data-pptx-role="background"` primitive or an explicit slot.
+
+
 ## 3. Legacy Template Input Boundary
 
 Projects or analysis packages carrying `analysis/native_structure.json` / `sources/source.pptx`, `pptx_structure.mode: baseline|template|preserve`, `layout_strategy`, `data-pptx-layout-kind`, `distilled` / `utility`, direct atomic placeholders, or an incomplete root Master identity are not generation/export inputs and are never upgraded in place; create a separate current workspace through [`create-template`](../workflows/create-template.md). A project explicitly declaring `mode: flat` is the current free-design/brand-only route and needs no conversion.

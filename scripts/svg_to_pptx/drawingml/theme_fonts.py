@@ -382,6 +382,24 @@ def apply_theme_font_spec(extract_dir: Path, spec: ThemeFontSpec) -> None:
         tree.write(theme_path, encoding="utf-8", xml_declaration=True)
 
 
+def _clear_default_bullets(style: ET.Element) -> None:
+    """Drop the Master text style's default bullet and hanging indent.
+
+    Every generated page writes an explicit bullet choice per paragraph, but a
+    stray default still leaks through layouts and imported placeholders, so the
+    master itself is normalized to ``buNone`` with a zeroed indent.
+    """
+    for child in list(style):
+        if not child.tag.endswith("pPr"):
+            continue
+        for tag in ("buChar", "buAutoNum", "buBlip", "buNone"):
+            for bullet in child.findall(f"{{{DML_NS}}}{tag}"):
+                child.remove(bullet)
+        child.attrib.pop("marL", None)
+        child.attrib.pop("indent", None)
+        child.append(ET.Element(f"{{{DML_NS}}}buNone"))
+
+
 def _style_run_properties(style: ET.Element, label: str) -> list[ET.Element]:
     run_properties = list(style.iter(f"{{{DML_NS}}}defRPr"))
     if not run_properties:
@@ -454,6 +472,10 @@ def apply_master_text_style_spec(
                 body_levels,
             ):
                 run_properties.set("sz", str(size))
+            # Generated pages express list structure with geometry, never with a
+            # typed bullet. The template default would otherwise make any
+            # paragraph that omits an explicit bullet choice render bulleted.
+            _clear_default_bullets(style)
 
         style_sizes = (
             ("titleStyle", (spec.title_hpt,)),

@@ -3835,9 +3835,13 @@ def _set_placeholder_no_inherited_bullets(
     shape: ET.Element,
     item: TemplateElementSpec,
 ) -> None:
-    """Keep prose bullet-free while preserving explicit subtitle bullets."""
-    if item.placeholder not in {"body", "subtitle"}:
-        return
+    """Keep prose bullet-free while preserving explicit subtitle bullets.
+
+    Every placeholder that carries authored prose inherits the slide master's
+    ``bodyStyle`` bullet (``buChar`` plus a hanging indent) unless the paragraph
+    declares its own choice. Only ``body`` and ``subtitle`` used to be covered,
+    so ``object`` slots and ordinary text boxes rendered as bulleted lists.
+    """
     tx_body = shape.find(f"{{{PML_NS}}}txBody")
     if tx_body is None:
         return

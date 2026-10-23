@@ -17,7 +17,7 @@
   },
   "file_budgets": {
     "AGENTS.md": 3250,
-    "skills/ppt-master/SKILL.md": 2500,
+    "skills/ppt-master/SKILL.md": 2750,
     "skills/ppt-master/references/executor-base.md": 12000,
     "skills/ppt-master/references/executor-structured.md": 5500,
     "skills/ppt-master/references/executor-chart.md": 2000,
@@ -196,6 +196,7 @@
       ],
       "files": [
         "skills/ppt-master/workflows/generate-pptx.md",
+        "skills/ppt-master/workflows/interview-gate.md",
         "skills/ppt-master/references/strategist.md",
         "skills/ppt-master/references/plan-core.md",
         "skills/ppt-master/references/strategist-image.md",
@@ -828,11 +829,13 @@
       "max_tokens": 85000
     },
     "stage.generate.image.ai-two-types": {
-      "description": "Incremental AI-image role with the selected preset or exact custom rendering bases and two selected local types. Ceiling raised after BUDGET_LOAD_SET reported 26216 tokens.",
+      "description": "Incremental AI-image role with the selected preset or exact custom rendering bases and two selected local types, plus the Qwen-Image-2.1 prompt manual and its skeletons that image-generator.md §4.5 makes the prompt authority on the local comfyui backend. Ceiling raised after BUDGET_LOAD_SET reported 26216 tokens.",
       "scope": "incremental",
       "files": [
         "skills/ppt-master/references/image-base.md",
         "skills/ppt-master/references/image-generator.md",
+        "skills/ppt-master/references/qwen-image-2-1-prompting.md",
+        "skills/ppt-master/templates/qwen_prompt_skeletons.md",
         {
           "glob": "skills/ppt-master/references/image-renderings/_index.md",
           "select": 1,
@@ -2321,6 +2324,10 @@
   ],
   "coverage": {
     "exempt": [
+      {
+        "glob": "skills/ppt-master/README.md",
+        "reason": "Fork distribution readme at the skill root; humans read it, no generation role loads it."
+      },
       {
         "glob": "skills/ppt-master/workflows/index.md",
         "reason": "Maintainer-only workflow inventory; never loaded during task execution."

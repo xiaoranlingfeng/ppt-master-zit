@@ -17,6 +17,29 @@ pip install 'tiktoken>=0.7.0'
 
 Exit code `1` on any deterministic error. An unaccepted exact duplicate or schema projection is an actionable warning; heuristic near-duplicate candidates remain report-only information and do not enter `findings`. With `--json`, setup failures also use a stable `AUDIT_SETUP_ERROR` JSON envelope instead of a traceback or plain-text error.
 
+## Layout this tool expects
+
+Every manifest path is written against the upstream repository shape: the skill
+sits at `<repo>/skills/ppt-master/`, `AGENTS.md` sits at `<repo>`, and the
+default `--root` is the folder three levels above this script. A skill-only
+distribution — this fork's folder dropped into an agent's `skills/` directory —
+has neither shape, so the audit now stops with an explicit layout error instead
+of "include pattern matched no files". To run it here, audit from a real
+checkout and hang the fork off its expected path:
+
+```powershell
+# <repo> must also carry upstream's AGENTS.md for the corpus to resolve
+cmd /c mklink /J "<repo>\skills\ppt-master" "C:\...\ppt-master-comfyui"
+python "<repo>\skills\ppt-master\scripts\prompt_audit.py" --root "<repo>"
+```
+
+Under that prefix the manifest is upstream's, so this fork's own additions
+(`workflows/interview-gate.md`, `references/image-generator.md` §4.5,
+`references/qwen-image-2-1-prompting.md`, `templates/qwen_prompt_skeletons.md`)
+have no load set or budget entry yet and will surface as `LOAD_COVERAGE_GAP`.
+Add them per [`../../workflows/index.md`](../../workflows/index.md) §3 before
+treating a clean run as proof of anything.
+
 ## What It Checks
 
 | Area | Failure class |

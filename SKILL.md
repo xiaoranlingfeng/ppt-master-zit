@@ -2,15 +2,16 @@
 name: ppt-master-comfyui
 description: >
   PPT Master with a local ComfyUI image backend (default workflow Qwen-Image-2.1
-  t2i on localhost:8188; switchable to Z-Image Turbo「zit基础」or any API-format
-  workflow — the fork is defined by the backend, not by a model).
+  t2i on localhost:8188; switchable per deck to MOSS-Image SFT, Z-Image Turbo
+  「zit基础」, or any API-format workflow — the fork is defined by the backend,
+  not by a model).
   Same editable-PPTX generation, reconstruction, template,
   and enhancement workflow as ppt-master, but AI 配图默认走本机 ComfyUI.
   Use when the user explicitly asks for ppt-master-comfyui / comfyui 版 or the
   former names ppt-master-qwen-image-2-1, ppt-master-zit / qwen 版 / zit 版,
   or wants decks whose images come from the local ComfyUI queue.
 metadata:
-  version: "6.7.0"  # base: official ppt-master v6.7.0
+  version: "6.7.0"  # base: official ppt-master v6.7.0 · fork build: v6.7.0-comfyui.2
   copyright: "Copyright (c) 2025-2026 Hugo He"
   license: "MIT"
   official_repository: "https://github.com/hugohe3/ppt-master"
@@ -45,10 +46,19 @@ use CWD, or assume a repo checkout. If unavailable, ask; never search or guess.
 |---|---|
 | Generate PPTX — Image to PPTX | [`workflows/profiles/image-to-pptx.md`](workflows/profiles/image-to-pptx.md); Codex-supported, always Quick |
 | Generate PPTX — Beautify | [`workflows/profiles/beautify-pptx.md`](workflows/profiles/beautify-pptx.md); explicit Quick intent selects Quick, otherwise Default |
-| Generate PPTX — ordinary Default | [`workflows/generate-pptx.md`](workflows/generate-pptx.md) |
-| Generate PPTX — ordinary explicit Quick | [`workflows/profiles/quick-generate.md`](workflows/profiles/quick-generate.md) |
+| Generate PPTX — ordinary Default | [`workflows/generate-pptx.md`](workflows/generate-pptx.md); run [`workflows/interview-gate.md`](workflows/interview-gate.md) — D0–D3 before Stage 1, D5–D9 before Stage 2, D4 per page before authoring |
+| Generate PPTX — ordinary explicit Quick | [`workflows/profiles/quick-generate.md`](workflows/profiles/quick-generate.md); interview gate skipped |
 | Create Template | [`workflows/create-template.md`](workflows/create-template.md) |
-| Edit Native PPTX | [`workflows/edit-native-pptx.md`](workflows/edit-native-pptx.md) |
+| Edit Native PPTX | [`workflows/edit-native-pptx.md`](workflows/edit-native-pptx.md); run the interview gate's D4/D7/D8 before its §4.3 plan |
+
+**Every decision is the user's.** On ordinary Default and Edit Native runs the
+interview gate asks one question at a time — outline, page count, per-page
+content, page transition, per-element animation, image usage and local model
+(Qwen-Image-2.1 is the default; MOSS-Image SFT and Z-Image Turbo are the other
+local families), playback, deliverables — through the question
+tool, then folds the answers into that route's existing confirmation. It adds
+no route, opens no second gate, and never confirms on the user's behalf.
+Explicit Quick or delegated intent skips it.
 
 **Hard rule — selected authority only**: Do not load another top-level route's
 procedure after routing. Image to PPTX and Beautify are mutually exclusive;

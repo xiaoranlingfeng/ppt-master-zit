@@ -2607,6 +2607,11 @@ def _paragraph_pr_xml(
         margin = px_to_emu(_bullet_margin_px(bullet, font_size))
         indent = px_to_emu(_bullet_indent_px(bullet, font_size))
         attrs += f' marL="{margin}" indent="{indent}"'
+    else:
+        # Without an explicit buNone the paragraph inherits the slide master's
+        # bodyStyle bullet, so ordinary prose renders as a bulleted list.
+        attrs += ' marL="0" indent="0"'
+        body_xml = body_xml + '<a:buNone/>'
     return f'<a:pPr {attrs}>{body_xml}{_build_bullet_xml(bullet, ctx)}</a:pPr>'
 
 

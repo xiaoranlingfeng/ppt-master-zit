@@ -17,6 +17,7 @@ Route selection authority for PPT Master. Select exactly one top-level route, th
 | One artifact lifecycle | Every request enters Generate PPTX, Create Template, or Edit Native PPTX |
 | Supporting documents are not routes | Create Template child workflows, generation profiles, stages, and governance documents refine the selected route; never offer them as competing routes |
 | Missing prerequisite | State it and stop that route; do not invent an alternative |
+| Interview gate | Ordinary Default requests resolve every listed decision with the user through [`interview-gate`](./interview-gate.md) before their owning gate; explicit Quick, Image to PPTX, and Beautify-Quick skip it |
 | Ambiguous existing-deck request | Ask one discriminator question only when needed: regenerate the visible design (Generate), or preserve the native deck and edit it (Edit Native PPTX)? |
 | Explicit user override | Honor explicit route instructions only when the route preconditions are satisfied |
 
@@ -38,6 +39,7 @@ Route selection authority for PPT Master. Select exactly one top-level route, th
 
 | Request condition | Generate-route behavior |
 |---|---|
+| Ordinary Default Generate request without explicit quick/delegation intent | Run [`interview-gate`](./interview-gate.md) before the existing gates: D0–D3 before Stage 1, D5–D9 before Stage 2, D4 page-by-page before Step 6 authoring. Every listed decision is put to the user one question at a time; the gate never adds a route or confirms on the user's behalf |
 | Raster files represent page frames to reconstruct into a layered editable PPTX | Activate the Codex-supported [`image-to-pptx`](./profiles/image-to-pptx.md); normalize the frame roster and activate `quick-generate` directly |
 | Existing PPTX must preserve wording, page count, and order 1:1 | Activate [`beautify-pptx`](./profiles/beautify-pptx.md); Quick when that profile's explicit trigger also matches, otherwise `generate-pptx` |
 | Effective delivery purpose is recorded, self-running, or video-directed | Inside the selected runtime, load [`video-design`](../references/video-design.md) before whole-solution/page planning; a design reference, not a profile — notes, animation, audio, and native MP4 stay with their stages |

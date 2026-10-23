@@ -98,6 +98,8 @@ python3 skills/ppt-master/scripts/svg_authoring_view.py "projects/<slug>_<YYYYMM
 
 ⛔ **BLOCKING**: present one plan and wait for explicit confirmation before editing any SVG, writing notes, generating audio, or exporting: the output roster (output page → source slide → referenced / edited / new copy, with a one-line reason per edited or dropped page), the content mapping (which material goes where, what is dropped for lack of a fitting layout), each enhancement module on/off with its effect and duration, and any §4.1 fail-closed case the plan must avoid. Chat confirmation suffices; write `page_plan.json` afterwards.
 
+**Interview gate before that plan** (see [`interview-gate.md`](./interview-gate.md) D4/D7/D8): resolve the roster and content mapping one decision at a time — output page mapping, what each edited page must say, the transition (`fade` default; `-t none` for a deck that should not move), per-element animation on/off, and notes/audio/auto-advance — then present the single §4.3 confirmation. The page-by-page questions never replace that confirmation.
+
 ---
 
 ## 5. Edit Pages

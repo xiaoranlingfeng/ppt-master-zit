@@ -1,5 +1,6 @@
 # local config (may contain personal paths / keys for cloud backends)
 .env
+.env.bak*
 
 # python
 __pycache__/
@@ -10,6 +11,8 @@ __pycache__/
 projects/
 *.log
 comfyui_autostart.log
+# local script patches kept beside the skill, never part of it
+.fix_backup/
 
 # OS
 Thumbs.db

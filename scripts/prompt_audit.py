@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import statistics
 import sys
@@ -100,7 +101,20 @@ class ReferenceEdge:
 
 
 def _relative_path(root: Path, path: Path) -> str:
-    return path.resolve().relative_to(root.resolve()).as_posix()
+    """Return the root-relative POSIX path of one corpus file.
+
+    Try the logical pair first: a skill reached through a junction or symlink
+    resolves outside the audit root, and resolving both sides then both crashes
+    and destroys the manifest-facing path that keys budgets and load sets.
+    """
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        pass
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise AuditError(f"{path} is not inside the audit root {root}") from exc
 
 
 def _read_utf8(path: Path) -> str:
@@ -960,10 +974,17 @@ def extract_references(
                 target_without_anchor = raw_target.split("#", 1)[0].split("?", 1)[0]
                 if not target_without_anchor:
                     continue
-                target_path = (document.absolute_path.parent / target_without_anchor).resolve()
+                # Normalize lexically. Path.resolve() follows junctions and
+                # symlinks, so a skill linked in as skills/ppt-master would
+                # report every local link as escaping the audit root.
+                target_path = Path(
+                    os.path.normpath(
+                        document.absolute_path.parent / target_without_anchor
+                    )
+                )
                 try:
                     target_relative = _relative_path(root, target_path)
-                except ValueError:
+                except (ValueError, AuditError):
                     findings.append(
                         Finding(
                             severity="error",
@@ -2011,6 +2032,25 @@ def run_audit(
 ) -> dict[str, Any]:
     """Run the complete read-only prompt audit and return a stable report."""
     root = root.resolve()
+    if not (root / "AGENTS.md").is_file():
+        # Every manifest path is written against the upstream repository shape
+        # (<repo>/AGENTS.md plus <repo>/skills/ppt-master/). A skill-only
+        # distribution has neither, and this script's default root then resolves
+        # to an unrelated folder, so say what is wrong instead of failing on the
+        # first include pattern with a bare "matched no files".
+        layout = (
+            "no AGENTS.md and no skills/ppt-master/ prefix"
+            if not (root / "skills" / "ppt-master").is_dir()
+            else "no AGENTS.md"
+        )
+        raise AuditError(
+            "Audit root is not an upstream ppt-master checkout: "
+            f"{root} has {layout}. The manifest's document paths, AGENTS.md "
+            "budget, and load sets only resolve against <repo>/skills/ppt-master/, "
+            "so run this audit from a full checkout or pass --root to one (link "
+            "this skill in as skills/ppt-master first). This fork ships as a "
+            "skill folder only; see scripts/docs/prompt_audit.md."
+        )
     manifest = load_manifest(manifest_path)
     encoding_name = str(manifest["encoding"])
     paths = discover_documents(root, manifest["documents"])
@@ -2019,7 +2059,8 @@ def run_audit(
     findings: list[Finding] = []
     try:
         manifest_label = _relative_path(root, manifest_path)
-    except ValueError:
+    except (ValueError, AuditError):
+        # A --manifest outside the audit root is legal; report its real path.
         manifest_label = str(manifest_path.resolve())
 
     corpus_budget = manifest["documents"].get("max_tokens")

@@ -1,15 +1,29 @@
 #!/usr/bin/env python3
 """
-Local ComfyUI image generation backend (Qwen-Image-2.1 t2i workflow).
+Local ComfyUI image generation backend (Qwen-Image-2.1 / MOSS-Image SFT /
+Z-Image Turbo t2i workflows).
 
-Runs the exported image_qwen_image_2_1_t2i workflow (Qwen-Image-2.1, 7B
-single-stream DiT + Qwen3-VL 8B int8 encoder) against a locally running
-ComfyUI server via its HTTP API. No API key is required. The older Z-Image
-Turbo template (zit_basic_api.json) is kept and still selectable via
-COMFY_WORKFLOW.
+Runs an exported text-to-image workflow against a locally running ComfyUI
+server via its HTTP API. No API key is required. Three model families ship:
+
+  qwen (default)  Qwen-Image-2.1 — 7B single-stream DiT + Qwen3-VL 8B int8
+                  encoder, native RGBA, cfg 1.
+  moss            MOSS-Image SFT — Qwen3.5 9B encoder + Flux2-small VAE,
+                  steps 50 / cfg 3 / euler / sgm_uniform / shift 5, opaque
+                  RGB. Prompts MUST be authored with the user's
+                  moss-image-prompt-enhancer skill (see references/
+                  image-generator.md §4.5); the backend warns when the
+                  prompt does not look like a MOSS caption / Layout.
+  zit             Z-Image Turbo "zit基础" — fast, Apache-2.0, opaque RGB.
+
+Selection order (first hit wins):
+  COMFY_MODEL          (optional; qwen | moss | zit, or a template path)
+  COMFY_WORKFLOW       (optional; path to an API-format workflow JSON)
+  built-in default     qwen_image_2_1_t2i_api.json
 
 Configuration keys:
   COMFY_BASE_URL       (optional; default http://127.0.0.1:8188)
+  COMFY_MODEL          (optional; named model family, see above)
   COMFY_WORKFLOW       (optional; path to an API-format workflow JSON.
                         Default: <skill>/templates/comfyui/
                         qwen_image_2_1_t2i_api.json)
@@ -17,7 +31,11 @@ Configuration keys:
                         Ignored while cfg stays at 1 — the Qwen-Image-2.1
                         official path.)
   COMFY_FILENAME_PREFIX (optional; SaveImage prefix, default "ppt_master")
-  COMFY_TIMEOUT        (optional; seconds to wait per image, default 600)
+  COMFY_TIMEOUT        (optional; seconds to wait per image, default 900)
+  COMFY_TEXT_RESOLUTION (optional; pins the Qwen-Image-2.1 encoder
+                        `resolution` hint. Unset re-derives it from the
+                        requested size: the shipped template keeps 1K at its
+                        own 1024 and follows the tier at 2K / 4K.)
 
 Auto-start keys (launch the local ComfyUI when 127.0.0.1:8188 is down):
   COMFY_AUTOSTART      (optional; "1" enable / "0" disable, default "1")
@@ -25,20 +43,21 @@ Auto-start keys (launch the local ComfyUI when 127.0.0.1:8188 is down):
                         browser after an auto-start so the user can watch the
                         queue, "0" stay headless; default "1")
   COMFY_ROOT           (optional; aki-v3 integration root, e.g.
-                        ~\Downloads\ComfyUI-aki-v3. Autodetected
+                        ~/Downloads/ComfyUI-aki-v3. Autodetected
                         from a candidate list when unset.)
   COMFY_LAUNCH_CMD     (optional; full custom launch command with {port}
                         placeholder, overrides COMFY_ROOT autodetection)
   COMFY_START_TIMEOUT  (optional; seconds to wait for server boot, default 300)
 
 Sampler overrides (Qwen-Image-2.1 official path: steps 25 / cfg 1 /
-euler / simple; Z-Image Turbo template defaults were steps 8 / cfg 1 /
-res_multistep / simple / shift 3):
+euler / simple; MOSS-Image SFT: steps 50 / cfg 3 / euler / sgm_uniform /
+shift 5; Z-Image Turbo: steps 8 / cfg 1 / res_multistep / simple / shift 3):
   COMFY_STEPS          (optional; KSampler steps)
   COMFY_CFG            (optional; KSampler cfg)
   COMFY_SAMPLER        (optional; sampler_name, e.g. euler)
   COMFY_SCHEDULER      (optional; scheduler, e.g. simple)
-  COMFY_SHIFT          (optional; ModelSamplingAuraFlow shift, Z-Image only)
+  COMFY_SHIFT          (optional; ModelSamplingSD3 / ModelSamplingAuraFlow
+                        shift — MOSS and Z-Image)
 
 The template's placeholder nodes are patched per request:
   - the positive CLIPTextEncode (text) or TextEncodeQwenImage21 (prompt)
@@ -91,10 +110,52 @@ from image_backends.backend_common import (
 )
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8188"
-DEFAULT_TEMPLATE = (
-    _SCRIPTS_DIR.parent / "templates" / "comfyui" / "qwen_image_2_1_t2i_api.json"
-)
+_COMFY_TEMPLATE_DIR = _SCRIPTS_DIR.parent / "templates" / "comfyui"
+DEFAULT_TEMPLATE = _COMFY_TEMPLATE_DIR / "qwen_image_2_1_t2i_api.json"
 PROMPT_PLACEHOLDER = "{{POSITIVE_PROMPT}}"
+# Qwen-Image-2.1 measures ~80 s per 2K image on a mobile 3080 and the local GPU
+# queue can sit behind another client, so the old 600 s cap killed live runs.
+DEFAULT_IMAGE_TIMEOUT = 900
+
+# Named local model families. "template" is the API-format workflow shipped
+# under templates/comfyui/; "prompt_style" tells the deck pipeline which
+# prompting manual owns this model's prompts.
+MODELS = {
+    "qwen": {
+        "template": "qwen_image_2_1_t2i_api.json",
+        "label": "Qwen-Image-2.1",
+        "prompt_style": "qwen",
+        "rgba": True,
+        "min_dimension": 32,
+        "dimension_step": 32,
+        "aliases": ("qwen-image", "qwen_image", "qwen-image-2.1", "qwen_image_2_1"),
+    },
+    "moss": {
+        "template": "moss_image_sft_api.json",
+        "label": "MOSS-Image SFT",
+        # Prompts for this model are authored by the moss-image-prompt-enhancer
+        # skill (a sibling skill), never written ad hoc by the deck pipeline.
+        "prompt_style": "moss",
+        "rgba": False,
+        "min_dimension": 64,
+        "dimension_step": 16,
+        "aliases": ("moss-image", "moss_image", "moss-image-sft", "moss_image_sft",
+                    "moss-sft"),
+    },
+    "zit": {
+        "template": "zit_basic_api.json",
+        "label": "Z-Image Turbo (zit基础)",
+        "prompt_style": "qwen",
+        "rgba": False,
+        "min_dimension": 32,
+        "dimension_step": 32,
+        "aliases": ("z-image", "z_image", "z-image-turbo", "zit-basic", "zit基础"),
+    },
+}
+_MODEL_ALIASES = {
+    alias: name for name, cfg in MODELS.items() for alias in (*cfg["aliases"], name)
+}
+
 # image_size token -> target megapixels (mirrors the other backends' 512px/1K/2K/4K)
 IMAGE_SIZE_TO_MEGAPIXELS = {
     "512px": 0.25,
@@ -230,8 +291,27 @@ def _ensure_server_running(base_url: str) -> None:
     )
 
 
-def _resolve_dimensions(aspect_ratio: str, image_size: str) -> tuple[int, int]:
-    """Compute width/height (multiple of 32) for the requested ratio and size."""
+def _apply_dimension_rule(width: int, height: int, model: str | None = None) -> tuple[int, int]:
+    """Snap width/height to the model family's minimum and alignment.
+
+    Qwen-Image-2.1 (and the Z-Image Turbo template, which loads the same VAE
+    stack) decode at multiples of 32. MOSS-Image only requires multiples of
+    16, but its 16px latents combined with 4x patching break down below 64px.
+    """
+    cfg = MODELS.get(model or "qwen", MODELS["qwen"])
+    step = int(cfg.get("dimension_step") or 32)
+    minimum = max(int(cfg.get("min_dimension") or 64), step)
+
+    def snap(value: int) -> int:
+        value = int(round(value / step)) * step
+        return max(minimum, value)
+
+    return snap(width), snap(height)
+
+
+def _resolve_dimensions(aspect_ratio: str, image_size: str,
+                        model: str | None = None) -> tuple[int, int]:
+    """Compute width/height (model-aligned) for the requested ratio and size."""
     ratio = ASPECT_RATIO_MAP.get(aspect_ratio)
     if ratio is None:
         raise ValueError(
@@ -254,18 +334,88 @@ def _resolve_dimensions(aspect_ratio: str, image_size: str) -> tuple[int, int]:
     total = megapixels * 1_000_000
     width = math.sqrt(total * ratio)
     height = width / ratio
-    width = max(64, int(round(width / 32.0)) * 32)
-    height = max(64, int(round(height / 32.0)) * 32)
-    return width, height
+    return _apply_dimension_rule(width, height, model)
+
+
+# The Qwen-Image-2.1 encoder node carries a `resolution` conditioning hint.
+# The shipped template pins it at the 1K tier (1024); leaving it there while the
+# latent grows to 2K/4K conditions the text encoder on a quarter of the real
+# area. Only re-derive when the tier actually moved, so the measured 1K path
+# keeps sending exactly the values it shipped with.
+_TEXT_RESOLUTION_TRIGGER_RATIO = 0.2
+
+
+def _resolve_text_resolution(width: int, height: int, current,
+                             model: str | None = None) -> int:
+    """Return the encoder `resolution` hint for the requested output size."""
+    raw = os.environ.get("COMFY_TEXT_RESOLUTION", "").strip()
+    if raw:
+        try:
+            return max(64, int(raw))
+        except ValueError:
+            raise ValueError(f"COMFY_TEXT_RESOLUTION is not a number: {raw!r}")
+    step = int(MODELS.get(model or "qwen", MODELS["qwen"]).get("dimension_step") or 32)
+    equivalent = max(2 * step, int(round(math.sqrt(width * height) / step)) * step)
+    if not isinstance(current, int) or current <= 0:
+        return equivalent
+    if abs(equivalent - current) / current <= _TEXT_RESOLUTION_TRIGGER_RATIO:
+        return current
+    return equivalent
+
+
+def _resolve_model_name(model: str | None = None) -> str | None:
+    """Map a named model / shipped template path to a MODELS key.
+
+    Precedence: explicit ``model`` argument, COMFY_MODEL, then a COMFY_WORKFLOW
+    whose filename matches a shipped template. Returns None for custom
+    templates and unknown names.
+    """
+    for raw in (model, os.environ.get("COMFY_MODEL", "")):
+        value = (raw or "").strip()
+        if not value:
+            continue
+        key = _MODEL_ALIASES.get(value.lower())
+        if key:
+            return key
+        for name, cfg in MODELS.items():
+            if Path(value).name.lower() == cfg["template"].lower():
+                return name
+        return None
+    workflow = os.environ.get("COMFY_WORKFLOW", "").strip()
+    if workflow:
+        name = Path(workflow).name.lower()
+        for key, cfg in MODELS.items():
+            if name == cfg["template"].lower():
+                return key
+    return None
+
+
+def _resolve_template(model: str | None = None) -> tuple[Path, str | None]:
+    """Return (template path, MODELS key) for the requested/configured model."""
+    explicit = (model or "").strip()
+    if explicit and explicit.lower() not in _MODEL_ALIASES:
+        # A real path or bare filename, not a model name.
+        known = _resolve_model_name(explicit)
+        if known:
+            return _COMFY_TEMPLATE_DIR / MODELS[known]["template"], known
+        return Path(explicit).expanduser(), None
+    key = _resolve_model_name(explicit or None)
+    if key:
+        return _COMFY_TEMPLATE_DIR / MODELS[key]["template"], key
+    template_env = os.environ.get("COMFY_WORKFLOW", "").strip()
+    if template_env:
+        return Path(template_env).expanduser(), None
+    return DEFAULT_TEMPLATE, "qwen"
 
 
 def _load_template(template_path: Path) -> dict:
     if not template_path.is_file():
         raise FileNotFoundError(
             f"ComfyUI workflow template not found: {template_path}\n"
-            "Set COMFY_WORKFLOW to an API-format workflow JSON exported "
-            "from ComfyUI (preinstalled: templates/comfyui/"
-            "qwen_image_2_1_t2i_api.json and zit_basic_api.json)."
+            "Set COMFY_MODEL to qwen / moss / zit, or COMFY_WORKFLOW to an "
+            "API-format workflow JSON exported from ComfyUI (preinstalled: "
+            "templates/comfyui/qwen_image_2_1_t2i_api.json, "
+            "moss_image_sft_api.json, zit_basic_api.json)."
         )
     graph = json.loads(template_path.read_text(encoding="utf-8"))
     if not isinstance(graph, dict) or not graph:
@@ -273,8 +423,62 @@ def _load_template(template_path: Path) -> dict:
     return graph
 
 
+# Latent nodes whose width/height are patched; Flux2 latents (MOSS-Image)
+# are included so a MOSS graph receives the requested size.
+_SIZE_NODE_TYPES = ("EmptyFlux2LatentImage", "EmptySD3LatentImage", "EmptyLatentImage")
+
+
 def _find_nodes(graph: dict, class_type: str) -> list[str]:
     return [nid for nid, node in graph.items() if node.get("class_type") == class_type]
+
+
+_OVERRIDE_WARNINGS_EMITTED: set[tuple[str, str]] = set()
+
+_OVERRIDE_ENV_NAMES = {
+    "steps": "COMFY_STEPS",
+    "cfg": "COMFY_CFG",
+    "sampler_name": "COMFY_SAMPLER",
+    "scheduler": "COMFY_SCHEDULER",
+    "shift": "COMFY_SHIFT",
+}
+
+
+def _override_matches_template(key: str, raw: str, template_value) -> bool:
+    """True when an env override restates the template's own value."""
+    if template_value is None:
+        return True
+    if key in ("steps", "cfg", "shift"):
+        try:
+            return math.isclose(float(raw), float(template_value), rel_tol=1e-9)
+        except (TypeError, ValueError):
+            return False
+    return str(raw).strip().lower() == str(template_value).strip().lower()
+
+
+def _warn_override_retunes_model(
+    model: str | None, key: str, raw: str, template_value
+) -> None:
+    """Warn once when a global sampler override retunes a model.
+
+    COMFY_STEPS / COMFY_CFG / COMFY_SAMPLER / COMFY_SCHEDULER / COMFY_SHIFT are
+    model-agnostic. A value kept from one model (typically Qwen's 25 / 1 /
+    euler / simple) silently rewrites another model's official sampler path,
+    so switching COMFY_MODEL produced degraded MOSS or Z-Image runs with no
+    sign of why.
+    """
+    if model is None or _override_matches_template(key, raw, template_value):
+        return
+    token = (model, key)
+    if token in _OVERRIDE_WARNINGS_EMITTED:
+        return
+    _OVERRIDE_WARNINGS_EMITTED.add(token)
+    label = MODELS.get(model, {}).get("label", model)
+    env_name = _OVERRIDE_ENV_NAMES.get(key, key.upper())
+    print(
+        f"  WARNING: {env_name}={raw} overrides the {label} template default "
+        f"{template_value} — sampler overrides apply to every local model; "
+        f"clear it in .env when switching COMFY_MODEL."
+    )
 
 
 def _patch_graph(
@@ -284,6 +488,8 @@ def _patch_graph(
     height: int,
     negative_prompt: str | None,
     filename_prefix: str,
+    *,
+    model: str | None = None,
 ) -> dict:
     """Return a per-run copy of the template with prompt/size/seed injected."""
     graph = json.loads(json.dumps(graph))  # deep copy
@@ -330,13 +536,29 @@ def _patch_graph(
         for nid in negatives:
             graph[nid]["inputs"]["text"] = negative_prompt
 
-    for nid in _find_nodes(graph, "EmptySD3LatentImage") + _find_nodes(graph, "EmptyLatentImage"):
+    size_nodes = [nid for t in _SIZE_NODE_TYPES for nid in _find_nodes(graph, t)]
+    if not size_nodes:
+        raise ValueError(
+            "Workflow template has no empty-latent node (EmptyLatentImage / "
+            "EmptySD3LatentImage / EmptyFlux2LatentImage) to receive the "
+            "requested size."
+        )
+    for nid in size_nodes:
         graph[nid]["inputs"]["width"] = width
         graph[nid]["inputs"]["height"] = height
         graph[nid]["inputs"]["batch_size"] = 1
 
-    # Optional sampler overrides (template ships Qwen-Image-2.1 defaults:
-    # steps 25, cfg 1, euler, simple; Z-Image Turbo: steps 8, res_multistep).
+    # Encoder resolution hint follows the size tier (Qwen-Image-2.1 only; the
+    # other templates carry no such input).
+    for nid in _find_nodes(graph, "TextEncodeQwenImage21"):
+        inputs = graph[nid]["inputs"]
+        if "resolution" in inputs:
+            inputs["resolution"] = _resolve_text_resolution(
+                width, height, inputs["resolution"], model)
+
+    # Optional sampler overrides (template defaults: Qwen-Image-2.1 steps 25,
+    # cfg 1, euler, simple; MOSS-Image SFT steps 50, cfg 3, euler,
+    # sgm_uniform; Z-Image Turbo steps 8, cfg 1, res_multistep, simple).
     _int_overrides = {
         "steps": os.environ.get("COMFY_STEPS", "").strip(),
     }
@@ -353,17 +575,26 @@ def _patch_graph(
         inputs.pop("control_after_generate", None)
         for key, raw in _int_overrides.items():
             if raw:
+                _warn_override_retunes_model(model, key, raw, inputs.get(key))
                 inputs[key] = int(raw)
         for key, raw in _float_overrides.items():
             if raw:
+                _warn_override_retunes_model(model, key, raw, inputs.get(key))
                 inputs[key] = float(raw)
         for key, raw in _raw_overrides.items():
             if raw:
+                _warn_override_retunes_model(model, key, raw, inputs.get(key))
                 inputs[key] = raw
     shift_raw = os.environ.get("COMFY_SHIFT", "").strip()
     if shift_raw:
-        for nid in _find_nodes(graph, "ModelSamplingAuraFlow"):
-            graph[nid]["inputs"]["shift"] = float(shift_raw)
+        # ModelSamplingSD3 carries MOSS-Image's shift (default 5.0);
+        # ModelSamplingAuraFlow carries Z-Image Turbo's (default 3).
+        for class_type in ("ModelSamplingSD3", "ModelSamplingAuraFlow"):
+            for nid in _find_nodes(graph, class_type):
+                _warn_override_retunes_model(
+                    model, "shift", shift_raw,
+                    graph[nid]["inputs"].get("shift"))
+                graph[nid]["inputs"]["shift"] = float(shift_raw)
 
     for nid in _find_nodes(graph, "SaveImage"):
         graph[nid]["inputs"]["filename_prefix"] = filename_prefix
@@ -442,10 +673,41 @@ def _collect_and_save(base_url: str, entry: dict, output_dir: str, filename: str
     raise RuntimeError("ComfyUI run finished but produced no output images")
 
 
+def _moss_prompt_warning(prompt: str) -> str | None:
+    """Return a warning when a MOSS prompt was not authored for MOSS-Image.
+
+    Prompts for MOSS-Image SFT must come from the sibling
+    ``moss-image-prompt-enhancer`` skill: a cohesive English caption
+    (``{"caption": "..."}``) or a compiled Layout (one JSON line with
+    ``abs_centralized`` / ``yxyx`` boxes). The RGBA wrapper used by the
+    Qwen-Image-2.1 path is meaningless here — MOSS returns opaque RGB — and
+    tag-soup or empty prompts degrade badly at cfg 3.
+    """
+    text = (prompt or "").strip()
+    if not text:
+        return "The prompt is empty; MOSS-Image needs a caption or Layout prompt."
+    if "RGBA" in text or "alpha channel" in text:
+        return ("The prompt carries the Qwen-Image-2.1 RGBA wrapper, but MOSS-Image "
+                "SFT returns opaque RGB. Author the prompt with the "
+                "moss-image-prompt-enhancer skill instead.")
+    looks_like_layout = (
+        text.startswith("{")
+        and '"items"' in text
+        and '"abs_centralized"' in text
+    )
+    if looks_like_layout:
+        return None
+    if len(text) < 40:
+        return ("The prompt is very short; MOSS-Image expects a developed caption "
+                "from the moss-image-prompt-enhancer skill.")
+    return None
+
+
 def _generate_image(base_url: str, template_path: Path, prompt: str,
                     aspect_ratio: str, image_size: str,
-                    output_dir: str = None, filename: str = None) -> str:
-    width, height = _resolve_dimensions(aspect_ratio, image_size)
+                    output_dir: str = None, filename: str = None,
+                    model: str | None = None) -> str:
+    width, height = _resolve_dimensions(aspect_ratio, image_size, model)
     graph = _patch_graph(
         _load_template(template_path),
         prompt=prompt,
@@ -453,14 +715,22 @@ def _generate_image(base_url: str, template_path: Path, prompt: str,
         height=height,
         negative_prompt=os.environ.get("COMFY_NEGATIVE_PROMPT"),
         filename_prefix=os.environ.get("COMFY_FILENAME_PREFIX", "ppt_master"),
+        model=model,
     )
     client_id = f"ppt-master-{random.randint(0, 2**31)}"
 
     print("[comfyui local]")
     print(f"  Server:       {base_url}")
+    print(f"  Model:        {(MODELS.get(model) or {}).get('label', 'custom template')}")
     print(f"  Template:     {template_path}")
     print(f"  Prompt:       {prompt[:120]}{'...' if len(prompt) > 120 else ''}")
     print(f"  Size:         {width}x{height}")
+    if model == "moss":
+        print("  Prompt style: MOSS caption/Layout — author with the "
+              "moss-image-prompt-enhancer skill")
+        warning = _moss_prompt_warning(prompt)
+        if warning:
+            print(f"  [WARN] {warning}", flush=True)
     print()
     _ensure_server_running(base_url)
     print("  [..] Submitting to ComfyUI queue...", flush=True)
@@ -484,7 +754,8 @@ def _generate_image(base_url: str, template_path: Path, prompt: str,
     prompt_id = resp.json()["prompt_id"]
 
     entry = _wait_for_completion(base_url, prompt_id,
-                                 int(os.environ.get("COMFY_TIMEOUT", "600")))
+                                 int(os.environ.get(
+                                     "COMFY_TIMEOUT", str(DEFAULT_IMAGE_TIMEOUT))))
     elapsed = time.time() - start
     print(f"\n  [DONE] ComfyUI finished in {elapsed:.1f}s")
     path = _collect_and_save(base_url, entry, output_dir or "", filename)
@@ -497,13 +768,17 @@ def generate(prompt: str,
              aspect_ratio: str = "1:1", image_size: str = "1K",
              output_dir: str = None, filename: str = None,
              model: str = None, max_retries: int = MAX_RETRIES) -> str:
-    """Generate an image on the local ComfyUI (Qwen-Image-2.1 t2i), with retries."""
-    if model:
-        print(f"[comfyui] Ignoring --model '{model}': the model is fixed by "
-              "the ComfyUI workflow template.")
+    """Generate an image on the local ComfyUI, with retries.
+
+    ``model`` selects the local model family (qwen / moss / zit) or a custom
+    API-format template path; it wins over COMFY_MODEL and COMFY_WORKFLOW.
+    """
+    if model and model.strip().lower() not in _MODEL_ALIASES:
+        print(f"[comfyui] Treating --model '{model}' as a workflow template path.")
     base_url = (os.environ.get("COMFY_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-    template_env = os.environ.get("COMFY_WORKFLOW", "").strip()
-    template_path = Path(template_env).expanduser() if template_env else DEFAULT_TEMPLATE
+    template_path, model_key = _resolve_template(model)
+    if model and model_key is None:
+        print(f"[comfyui] Custom template: the model is fixed by {template_path.name}.")
 
     # The local server serializes its own queue; retry transient submission
     # errors only (connection resets), never validation failures.
@@ -512,7 +787,8 @@ def generate(prompt: str,
         try:
             return _generate_image(base_url, template_path, prompt,
                                    aspect_ratio, image_size,
-                                   output_dir=output_dir, filename=filename)
+                                   output_dir=output_dir, filename=filename,
+                                   model=model_key)
         except (ValueError, FileNotFoundError, RuntimeError) as exc:
             if isinstance(exc, _ComfyRunFailed) or is_permanent_error(exc):
                 raise

@@ -48,6 +48,7 @@ Usage:
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -242,12 +243,14 @@ BACKEND_REGISTRY = {
     "comfyui": {
         "module": "backend_comfyui",
         "tier": "core",
-        "label": "Local ComfyUI (Qwen-Image-2.1 / Z-Image Turbo)",
+        "label": "Local ComfyUI (Qwen-Image-2.1 / MOSS-Image SFT / Z-Image Turbo)",
         "default_model": None,
-        "model_hint": "fixed by the workflow template (COMFY_WORKFLOW)",
+        "model_hint": ("qwen | moss | zit — set with COMFY_MODEL (moss prompts come "
+                       "from the moss-image-prompt-enhancer skill)"),
         "default_image_size": "1K",
-        "key_hint": "none (COMFY_BASE_URL / COMFY_WORKFLOW optional)",
-        "aliases": ["comfy", "comfyui-local", "comfy_ui", "zit"],
+        "key_hint": "none (COMFY_MODEL / COMFY_BASE_URL / COMFY_WORKFLOW optional)",
+        "aliases": ["comfy", "comfyui-local", "comfy_ui", "zit", "qwen-image-local",
+                    "moss", "moss-image", "moss_image", "moss-image-sft"],
     },
 }
 
@@ -887,6 +890,57 @@ def save_manifest(path: str, data: dict) -> None:
         raise
 
 
+MANIFEST_STATE_FILENAME = ".image_gen_state.json"
+"""Progress sidecar, written only by this script.
+
+`image_prompts.json` is authored and rewritten by the deck pipeline, so its
+`status` column cannot be trusted as the progress ledger: any regeneration that
+rewrites the manifest resets every row to Pending and the next `--manifest` run
+re-generates the whole deck. The signature kept here survives those rewrites.
+"""
+
+
+def _item_signature(item: dict, image_size: str, model: str | None) -> str:
+    """Hash of everything that must change for an existing file to be stale."""
+    payload = "\x1f".join(
+        (
+            (item.get("prompt") or "").strip(),
+            str(item.get("aspect_ratio") or "").strip(),
+            str(item.get("image_size") or image_size or "").strip(),
+            str(item.get("model") or model or "").strip(),
+        )
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _load_manifest_state(output_dir: str) -> dict:
+    """Read the progress sidecar; a missing or corrupt file starts empty."""
+    path = Path(output_dir) / MANIFEST_STATE_FILENAME
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _save_manifest_state(output_dir: str, state: dict) -> None:
+    """Atomically persist the progress sidecar; failure is never fatal."""
+    path = Path(output_dir) / MANIFEST_STATE_FILENAME
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=MANIFEST_STATE_FILENAME + ".",
+            suffix=".tmp",
+            dir=str(path.parent),
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp_path, path)
+    except OSError as exc:  # pragma: no cover — disk full / read-only volume
+        print(f"  [WARN] Could not write {MANIFEST_STATE_FILENAME}: {exc}")
+
+
+
 def _materialize_manifest_image(saved_path: str, target_path: Path) -> str:
     """Validate backend output and place it at the manifest's exact target path."""
     from image_backends.backend_common import (
@@ -914,12 +968,20 @@ def _run_manifest(manifest: dict, manifest_path: str, backend_module, *,
                   initial_concurrency: int,
                   image_size: str,
                   output_dir: str,
-                  model: str | None) -> tuple[int, int, int]:
+                  model: str | None,
+                  force: bool = False) -> tuple[int, int, int]:
     """Run Pending/Failed items through the backend with adaptive concurrency.
 
     Strategy:
       - Verify every `Generated` item's target before treating it as done;
         missing or unreadable output returns to `Failed` for this run.
+      - Re-adopt an item whose manifest `status` was reset but whose output
+        still matches the current prompt/aspect/size/model signature. The deck
+        pipeline rewrites `image_prompts.json` whenever a prompt is edited,
+        which wipes the status column; without this check the next run
+        regenerates images that are already correct.
+      - `force=True` ignores both the manifest status and the signature and
+        regenerates every item except `Needs-Manual`.
       - Start at `initial_concurrency` workers per batch.
       - On any rate-limit error in a batch, halve concurrency (min 1) and
         requeue the rate-limited items within a fixed attempt budget.
@@ -954,25 +1016,61 @@ def _run_manifest(manifest: dict, manifest_path: str, backend_module, *,
     )
 
     items = manifest["items"]
+    state = _load_manifest_state(output_dir)
     repaired_generated = False
+
+    if force:
+        for item in items:
+            if item["status"] != STATUS_NEEDS_MANUAL:
+                item["status"] = STATUS_PENDING
+        print("  [FORCE] Signatures ignored; every runnable item regenerates.")
+
     for item in items:
-        if item["status"] != STATUS_GENERATED:
+        if item["status"] == STATUS_GENERATED:
+            target_path = Path(output_dir) / item["filename"]
+            signature = _item_signature(item, image_size, model)
+            try:
+                validate_image_file(str(target_path))
+            except RuntimeError as exc:
+                item["status"] = STATUS_FAILED
+                item["last_error"] = (
+                    f"Generated file validation failed: {exc}"
+                )[:500]
+                repaired_generated = True
+                print(
+                    f"  [RETRY] {item['filename']} was marked Generated but its "
+                    f"target is invalid: {exc}"
+                )
+            else:
+                # Stamp the signature so a later manifest rewrite can still
+                # recognise this file as current.
+                item["prompt_sha"] = signature
+                state[item["filename"]] = {"signature": signature}
             continue
-        target_path = Path(output_dir) / item["filename"]
+        if item["status"] not in RETRYABLE_STATUSES or force:
+            continue
+        known = item.get("prompt_sha") or (
+            state.get(item["filename"]) or {}
+        ).get("signature")
+        signature = _item_signature(item, image_size, model)
+        if known != signature:
+            # No signature, or the prompt/aspect/size/model changed: the file
+            # on disk may not match this row, so it must be regenerated.
+            continue
         try:
-            validate_image_file(str(target_path))
-        except RuntimeError as exc:
-            item["status"] = STATUS_FAILED
-            item["last_error"] = (
-                f"Generated file validation failed: {exc}"
-            )[:500]
-            repaired_generated = True
-            print(
-                f"  [RETRY] {item['filename']} was marked Generated but its "
-                f"target is invalid: {exc}"
-            )
+            validate_image_file(str(Path(output_dir) / item["filename"]))
+        except RuntimeError:
+            continue
+        item["status"] = STATUS_GENERATED
+        item.pop("last_error", None)
+        repaired_generated = True
+        print(
+            f"  [SKIP] {item['filename']} already matches this prompt — "
+            "re-adopted without regenerating."
+        )
     if repaired_generated:
         save_manifest(manifest_path, manifest)
+    _save_manifest_state(output_dir, state)
 
     pending_idx = [
         i for i, it in enumerate(items) if it["status"] in RETRYABLE_STATUSES
@@ -1041,6 +1139,13 @@ def _run_manifest(manifest: dict, manifest_path: str, backend_module, *,
                     if exc is None:
                         item["status"] = STATUS_GENERATED
                         item.pop("last_error", None)
+                        signature = _item_signature(item, image_size, model)
+                        item["prompt_sha"] = signature
+                        state[item["filename"]] = {
+                            "signature": signature,
+                            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        }
+                        _save_manifest_state(output_dir, state)
                         ok_count += 1
                         print(f"  [OK]   {item['filename']}")
                     elif isinstance(exc, ValueError) or is_permanent_error(exc):
@@ -1313,6 +1418,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--force", action="store_true",
+        help=(
+            "Regenerate every --manifest item, ignoring both the manifest "
+            "status and the stored prompt signature (Needs-Manual still "
+            "skipped). Use when the images must be re-rolled unchanged."
+        ),
+    )
+    parser.add_argument(
         "--render-md", dest="render_md", default=None, metavar="IMAGE_PROMPTS_JSON",
         help=(
             "Render <json>'s read-only Markdown sidecar (image_prompts.md) "
@@ -1339,6 +1452,9 @@ def main() -> None:
             )
         except ValueError as exc:
             parser.error(str(exc))
+
+    if args.force and not args.manifest:
+        parser.error("--force only applies to --manifest runs")
 
     if args.reference_image is not None:
         # Reference editing is a single-image-only enhancement; keep it out of
@@ -1428,6 +1544,7 @@ def main() -> None:
                 image_size=image_size,
                 output_dir=str(manifest_output_dir),
                 model=args.model,
+                force=args.force,
             )
         except KeyboardInterrupt:
             print("\n\nInterrupted by user. Partial progress preserved in manifest.")

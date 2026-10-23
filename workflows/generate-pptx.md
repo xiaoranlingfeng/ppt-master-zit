@@ -84,7 +84,9 @@ Resolve the surface under [`confirm-surface.md`](../references/confirm-surface.m
 
 Stage 1 initializes from `default_mode` but the user may switch. Template mode requires at least one selection; exactly one supplied root may be preselected, several remain unselected.
 
-**✅ Checkpoint** — candidates ready; nothing selected, validated, or installed. Proceed to Step 4 without a user-visible stop.
+⛔ **Interview gate — D0–D3 before Stage 1** (ordinary Default runs; skipped on explicit Quick/delegated intent): read [`interview-gate.md`](./interview-gate.md) and resolve these with the user one question at a time, each through the question tool: **D0** the communication contract (audience, occasion, delivery context), **D1** template mode, **D2** the outline (offer concrete structures, not genres), **D3** the page count (tied to D2 — surface a page-count/content conflict rather than compressing silently). Ask D0–D1 now and D2–D3 right after source/topic facts are in hand, in the same run. Their answers pre-fill the Stage-1 payload; fold them into that one confirmation rather than opening a second gate.
+
+**✅ Checkpoint** — candidates ready; D0–D1 answered (D2–D3 where facts already allow); nothing selected, validated, or installed. Proceed to Step 4 without a user-visible stop.
 
 ---
 
@@ -126,6 +128,8 @@ This is a capability map, not a usage checklist; direction construction follows 
 **User images**: if the user provided images, run `python3 ${SKILL_DIR}/scripts/analyze_images.py <project_path>/images` before the Design Spec and read `analysis/image_analysis.csv` before §VIII. The CSV is a regenerated view of `images/`: rerun after any change, never treat it as a store. Never bulk-open images: Strategist inspects one specifically ambiguous asset under [`strategist-image.md`](../references/strategist-image.md) and records the result in §VIII; Executor inspects one `Existing` / `Sourced` asset only for crop, focal placement, or text contrast.
 
 ⛔ **BLOCKING — two-stage confirmation**: the always-on user gate unless explicitly delegated. Stage 1 confirms the communication contract and exactly one template mode (`free_design` or `templates`, the latter expanding the four registered-kind selectors plus supplied roots and requiring at least one selection). Final Stage 2 confirms the complete deck solution plus production mechanics only after the Stage-1 choice is installed or free design is closed; `refine_spec: true` adds one approval gate after Design Spec Gate 1. Author each stage once; submitted values — including blanks and unusual overrides — are authoritative.
+
+⛔ **Interview gate — D5–D9 before Stage 2** (ordinary Default runs): resolve, one question at a time, **D5** how images are used — none / user assets only / AI hero and chapter art / AI throughout / AI illustration sheets — together with the local model (**Qwen-Image-2.1 is the default**; MOSS-Image SFT switches the prompt authority to `moss-image-prompt-enhancer`; Z-Image Turbo for speed), **D6** the page transition (offer `fade` as the calm default; **Morph must be decided here, before authoring** — it needs paired pages and export cannot invent endpoint states), **D7** per-element animation (off by default; `-a auto` or a custom `animations.json` pass), **D8** playback rhythm and auto-advance/kiosk, **D9** deliverable set (PPTX / narration audio / MP4). Fold every answer into the Stage-2 payload and its production mechanics — no separate gate.
 
 **Only the user confirms**: the agent authors recommendations, operates the server, reads state, and applies a template. It never confirms on the user's behalf, automates submission, synthesizes a payload, or writes user result state; silence confirms nothing. Under explicit delegation the agent makes the Stage-1 decision, installs it, derives Stage 2, and presents one complete summary without fabricating UI receipts.
 
@@ -246,6 +250,8 @@ Read the core as one batch with the exact detail files named by the retained `sp
 
 **Hard rule — exact page roster**: `design_spec.md §IX` is the ordered queue — one final slide per entry, same id and order; never add, drop, merge, split, or reorder while drawing. A continuous run may first repair the affected §IX blocks and `page_rhythm` rows and rerun `validate` while the count stays inside the Stage-1 confirmed range; leaving that range reconfirms Stage 1. §IX is preferred wording and semantic authority, adapted only under `executor-base.md` §2.1's content-vs-expression contract, with sources read only for verification.
 
+⛔ **Interview gate — D4, page content, before the first SVG** (ordinary Default runs): walk the frozen §IX roster one page at a time and confirm with the user, per page, its core message, the density (how many points), and its carrier (prose / KPI / chart / table / image / native geometry). Present the page's proposal and ask a single question whose options are the realistic alternatives for that page. Confirm in batches of one; a page the user delegates is recorded as delegated. This is not a new approval for the whole deck — Stage 2 already authorized it — it is §IX content sign-off per page, and it settles the `page_rhythm` row and any image row before drawing. A page whose content the user changes is edited in §IX first, then drawn.
+
 **Image inventory**: trust the latest `analysis/image_analysis.csv` (rerun `analyze_images.py` if `images/` changed; an empty folder means no inventory). `page-context` is a diagnostic only ([`artifact-ownership.md`](../references/artifact-ownership.md) §1).
 
 **Design Parameter Confirmation (Mandatory)**: before the first SVG, output one confirmation listing the compact communication objective, canvas dimensions, body font size, color scheme (primary/secondary/accent HEX), font plan, the per-role calibration table, and the live-preview URL from the launcher below. The calibration table comes from `python3 ${SKILL_DIR}/scripts/text_measure.py calibrate <project_path> --outline`: every lock role with family, size, CJK and Latin ≈ chars per 100 px, and the longest planned §IX line per role in px — the checker's own estimator with wrapping headroom, written to `validation/text_calibration.json`. If the preview failed to launch, say so here rather than proceeding silently.
@@ -307,7 +313,34 @@ python3 ${SKILL_DIR}/scripts/svg_quality_checker.py <project_path> \
 
 **Logic Construction Phase (conditional)**: when the effective Speaker Notes outcome in §I is enabled, load [`executor-notes.md`](../references/executor-notes.md): validate a frozen `notes/total.md` against every information-bearing final SVG group (repair the page or the plan, never the script), or otherwise ground each page's narration in its final SVG and write `notes/total.md`. When disabled, load nothing and create no notes.
 
-**✅ Internal checkpoint** — preview launched in time, early gate after P05 (skipped on a roster of six or fewer pages), uninterrupted remaining pages, consolidated repair, exact §IX coverage, one-frame prose, final checker 0 errors, `notes/total.md` only when enabled. Do not print. Then run the applicable conditional gates and proceed to Step 7.
+⛔ **BLOCKING — rendered-output verification before Step 7**: the SVG checker validates authoring contracts, not the rendered slide. Four failure classes pass it every time and are only visible in the exported file, so convert and look before claiming the deck is done. Skipped only when the user asked for a source-only handoff.
+
+1. Export (Step 7.3), then render the PPTX to page images:
+
+   ```bash
+   soffice --headless --convert-to pdf --outdir <tmp> <project_path>/exports/<name>.pptx
+   python -c "import pymupdf; d=pymupdf.open('<tmp>/<name>.pdf'); [p.get_pixmap(dpi=96).save(f'<tmp>/p{i:02d}.png') for i,p in enumerate(d,1)]"
+   ```
+
+   Windows note: LibreOffice is often installed but not on `PATH`. Use
+   `"C:/Program Files/LibreOffice/program/soffice.exe"` for the first command,
+   and run the render snippet with the interpreter that has `pymupdf` installed
+   (the project venv), not a bare `python3`.
+
+2. Read **every** page image, not a sample. Repair at the owning layer, re-export, and re-render; one pass is rarely enough.
+
+| Symptom only visible after rendering | Cause | Fix at |
+|---|---|---|
+| Prose shows a `•` marker and a hanging indent | a paragraph omitted its bullet choice and inherited the Master `bodyStyle` | exporter writes `buNone` + zeroed indent on every generated paragraph |
+| Multi-line paragraph has uneven gaps or overlaps the block below | SVG line gaps became paragraph spacing, and PowerPoint re-wraps | author each line as its own `<text>` at absolute `y`; keep only the first line inside a placeholder carrier |
+| Artwork shows a bright rectangle on the page | generated paper tone differs from the deck's `background` / `secondary_bg` | tone the artwork's near-neutral bright pixels toward the colour of the surface it sits on; never tint ink or accents |
+| Text or image sits under a photograph or illustration | a full-canvas picture slot covered the text zone | give the page a Layout without that slot and place the artwork as an ordinary block |
+| A caption or chapter numeral overlaps its headline | both authored inside the same visual band | move one; a slot's bounds are capacity, not a quota |
+| Element animations absent though `animations.json` exists | the sidecar names a page/group the SVG no longer has, or that page has no animatable non-placeholder group | re-derive anchors with `animation_config.py list-groups <project_path>` after any page rewrite, then re-validate |
+
+**Hard rule — the sidecar survives page rewrites**: any edit that renames or removes a top-level `<g>` invalidates `animations.json` for that slide silently. After such an edit run `animation_config.py list-groups` and `animation_config.py validate`, and confirm the export carries `<p:timing>` on the slides that were customized.
+
+**✅ Internal checkpoint** — preview launched in time, early gate after P05 (skipped on a roster of six or fewer pages), uninterrupted remaining pages, consolidated repair, exact §IX coverage, one-frame prose, final checker 0 errors, `notes/total.md` only when enabled, rendered output inspected page by page. Do not print. Then run the applicable conditional gates and proceed to Step 7.
 
 > **Chart pages?** Run [`verify-charts`](stages/verify-charts.md) before Step 7 to calibrate coordinates; skip without chart pages.
 >
