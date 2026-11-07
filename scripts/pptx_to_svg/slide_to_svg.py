@@ -63,7 +63,7 @@ from .effect_to_svg import (
     convert_effects,
     unsupported_target_effect_metadata,
 )
-from .emu_units import NS, Xfrm, fmt_num, format_canvas_px_from_emu
+from .emu_units import NS, Xfrm, fmt_num, format_canvas_px_from_emu, parse_xfrm
 from .fill_to_svg import FillResult, resolve_fill
 from .formula_import import (
     A14_NS,
@@ -124,6 +124,7 @@ class AssemblyContext:
     palette: ColorPalette | None
     pkg: OoxmlPackage
     slide_part: PartRef
+    theme: PartRef | None = None
     slide_number: int | None = None
     theme_fonts: dict[str, str] = field(default_factory=dict)
     media_subdir: str = "images"
@@ -257,6 +258,7 @@ def assemble_slide(
         palette=palette,
         pkg=pkg,
         slide_part=slide.part,
+        theme=pkg.resolve_theme(slide.master),
         slide_number=pkg.first_slide_number + slide.index - 1,
         theme_fonts=theme_fonts or {},
         media_subdir=media_subdir,
@@ -375,6 +377,7 @@ def assemble_part_solo(
         palette=palette,
         pkg=pkg,
         slide_part=part,
+        theme=pkg.resolve_theme(part if role == "master" else parent_master),
         theme_fonts=theme_fonts or {},
         media_subdir=media_subdir,
         embed_images=embed_images,
@@ -459,6 +462,11 @@ def _convert_node(node: ShapeNode, ctx: AssemblyContext, *, top_level: bool) -> 
     ctx.current_node = node
     try:
         if node.hidden and not ctx.keep_hidden:
+            ctx.diagnose(
+                "author-hidden-omitted",
+                "Source shape is marked hidden by its author",
+                "exclude the hidden shape and its children from the SVG view",
+            )
             return ""
         if node.kind == SHAPE:
             return _convert_shape(node, ctx, top_level=top_level)
@@ -594,6 +602,32 @@ def _convert_shape(node: ShapeNode, ctx: AssemblyContext, *, top_level: bool) ->
         node.inherited_body_properties,
     )
     is_vertical = is_vertical_txbody(tx_body, node.xfrm)
+    source_xfrm = sp_pr.find("a:xfrm", NS) if sp_pr is not None else None
+    source_frame = (
+        parse_xfrm(source_xfrm)
+        if source_xfrm is not None and source_xfrm.find("a:ext", NS) is not None
+        else node.xfrm
+    )
+    if (
+        (source_frame.w <= 0 or source_frame.h <= 0)
+        and tx_body is not None
+        and any(element.text for element in tx_body.iter(f"{{{NS['a']}}}t"))
+        and (
+            node.placeholder is None
+            or _shape_scope(ctx) == "slide"
+            or (sp_pr is not None and sp_pr.find("a:xfrm", NS) is not None)
+        )
+    ):
+        # Report explicit collapsed frames even when placeholder inheritance
+        # recovers their geometry. Standalone guides can await inheritance.
+        ctx.diagnose(
+            "degenerate-text-frame",
+            "Text has a nonpositive source frame: "
+            + " ".join(fmt_num(value) for value in (
+                source_frame.x, source_frame.y, source_frame.w, source_frame.h,
+            )),
+            "retain text using available placeholder geometry or source overflow",
+        )
     block_formula = _block_formula_zone(tx_body)
     block_formula_failed = False
     if block_formula is not None and not is_vertical:
@@ -604,7 +638,7 @@ def _convert_shape(node: ShapeNode, ctx: AssemblyContext, *, top_level: bool) ->
             )
             if carrier_error is not None:
                 raise FormulaImportError(carrier_error)
-            imported_formula = import_formula(block_formula, display=True)
+            imported_formula = import_formula(block_formula, display=True, palette=ctx.palette)
         except FormulaImportError as exc:
             _diagnose_formula_fallback(ctx, exc)
             block_formula_failed = True
@@ -727,9 +761,13 @@ def _convert_shape(node: ShapeNode, ctx: AssemblyContext, *, top_level: bool) ->
         )
         if not visible_text_svg:
             return shape_xml
+        text_frame_attr = ""
+        if text_result.frame is not None:
+            text_frame = " ".join(fmt_num(value, 8) for value in text_result.frame)
+            text_frame_attr = f' data-pptx-frame="{text_frame}"'
         text_group = (
             f'<g id="{ctx.group_id_prefix}shape-{node.spid or ctx.shape_seq[0]}-text"'
-            f' data-name="{_xml_escape(node.name)} text">\n'
+            f' data-name="{_xml_escape(node.name)} text"{text_frame_attr}>\n'
             f"{visible_text_svg}\n</g>"
         )
         return f"{shape_xml}\n{text_group}"
@@ -743,6 +781,7 @@ def _convert_shape(node: ShapeNode, ctx: AssemblyContext, *, top_level: bool) ->
     if (
         export_tx_body is not None
         and geom is not None
+        and geom_xml
         and not text_result.contains_inline_formula
     ):
         inner_parts.append(
@@ -1036,18 +1075,18 @@ def _prepare_inline_formula_resolver(
     elif not force_opaque:
         for zone in zones:
             try:
-                imported[id(zone)] = import_formula(zone, display=False)
+                imported[id(zone)] = import_formula(zone, display=False, palette=ctx.palette)
             except FormulaImportError as exc:
                 failed = True
                 _diagnose_formula_fallback(ctx, exc)
 
-    def _resolve(zone: ET.Element) -> tuple[str | None, str]:
+    def _resolve(zone: ET.Element) -> tuple[FormulaImport | None, str]:
         if failed:
             return None, opaque_formula_preview(zone)
         item = imported.get(id(zone))
         if item is None:
             return None, opaque_formula_preview(zone)
-        return item.latex, item.preview
+        return item, item.preview
 
     return _resolve
 
@@ -1074,6 +1113,13 @@ def _render_block_formula(
     top_level: bool,
 ) -> str:
     """Emit one canonical block marker and a dependency-free SVG preview."""
+    if node.xfrm.w <= 0 or node.xfrm.h <= 0:
+        ctx.diagnose(
+            "formula-degenerate-frame",
+            "Source formula has a missing or nonpositive frame: "
+            + _object_metadata(node, ctx)["data-pptx-frame"],
+            "retain the formula content and exact frame; no positive frame is invented",
+        )
     x = fmt_num(node.xfrm.x)
     y = fmt_num(node.xfrm.y)
     width = fmt_num(node.xfrm.w)
@@ -1202,9 +1248,13 @@ def _resolve_geometry(node: ShapeNode, sp_pr: ET.Element | None) -> GeomResult |
 
     if geom is None:
         return None
+    # An evaluated path can retain a collapsed axis without inventing a frame.
+    # Mirror/native validation still decides whether that source is exportable.
     permits_degenerate_axis = (
         node.kind == CONNECTOR
         or prst in CONNECTOR_PRESET_TYPES
+        or (node.xfrm.w >= 0 and node.xfrm.h >= 0
+            and (node.xfrm.w > 0 or node.xfrm.h > 0))
     )
     if (
         not permits_degenerate_axis
@@ -1221,8 +1271,17 @@ def _build_geometry_xml(node: ShapeNode, sp_pr: ET.Element | None,
     if geom is None:
         geom = _resolve_geometry(node, sp_pr)
     if geom is None:
+        if sp_pr is not None and any(
+            sp_pr.find(path, NS) is not None
+            for path in ("a:prstGeom", "a:custGeom")
+        ):
+            ctx.diagnose(
+                "geometry-omitted",
+                "Source geometry could not be recovered at frame "
+                + _object_metadata(node, ctx)["data-pptx-frame"],
+                "retain any text/image content; no replacement geometry is invented",
+            )
         return ""
-
     # Resolve style defaults early so markers can adopt the theme stroke color
     # when <a:ln> doesn't carry an explicit solidFill.
     try:
@@ -1257,7 +1316,7 @@ def _build_geometry_xml(node: ShapeNode, sp_pr: ET.Element | None,
         fill = FillResult.none_fill()
     try:
         stroke = resolve_stroke(
-            sp_pr,
+            _effective_shape_stroke_properties(node, ctx, sp_pr),
             ctx.palette,
             id_prefix="m",
             id_seq=ctx.marker_seq,
@@ -1326,6 +1385,30 @@ def _build_geometry_xml(node: ShapeNode, sp_pr: ET.Element | None,
         # Skip emitting stroke="none" to keep markup tight.
         pass
 
+    if (
+        (node.xfrm.w <= 0 or node.xfrm.h <= 0)
+        and not (
+            (node.kind == CONNECTOR or geom.attrs.get("data-pptx-prst") in CONNECTOR_PRESET_TYPES)
+            and node.xfrm.w >= 0 and node.xfrm.h >= 0
+            and (node.xfrm.w > 0 or node.xfrm.h > 0)
+        )
+    ):
+        # Restoring evaluated zero-axis paths must not resurrect empty,
+        # explicitly unpainted text-box outlines as exportable source content.
+        if (
+            node.kind == SHAPE
+            and attrs.get("fill", "none") == "none"
+            and attrs.get("stroke", "none") == "none"
+            and not any(key in attrs for key in ("filter", "marker-start", "marker-end"))
+        ):
+            return ""
+        ctx.diagnose(
+            "geometry-degenerate-frame",
+            "Source geometry has a missing or degenerate frame: "
+            + _object_metadata(node, ctx)["data-pptx-frame"],
+            "retain evaluated geometry and the exact source frame",
+        )
+
     semantic_attrs = {
         **geom.attrs,
         **_object_metadata(node, ctx),
@@ -1362,14 +1445,62 @@ def _resolve_shape_style_defaults(node: ShapeNode, ctx: AssemblyContext) -> dict
         if fill_color:
             defaults["fill"] = fill_color
 
-    ln_ref = style.find("a:lnRef", NS)
-    if ln_ref is not None and ln_ref.attrib.get("idx", "").strip() != "0":
-        line_color = _resolve_ref_color(ln_ref, ctx)
-        if line_color:
-            defaults["stroke"] = line_color
-            defaults.setdefault("stroke-width", "1")
-
     return defaults
+
+
+def _effective_shape_stroke_properties(
+    node: ShapeNode,
+    ctx: AssemblyContext,
+    sp_pr: ET.Element | None,
+) -> ET.Element | None:
+    """Resolve the referenced theme line before applying local line overrides."""
+    reference = node.xml.find("p:style/a:lnRef", NS)
+    if reference is None or reference.get("idx") == "0":
+        return sp_pr
+    try:
+        index = int(reference.get("idx", ""))
+    except ValueError:
+        raise ValueError("Invalid theme line style index") from None
+    styles = (
+        ctx.theme.xml.findall("a:themeElements/a:fmtScheme/a:lnStyleLst/a:ln", NS)
+        if ctx.theme is not None else []
+    )
+    if not 1 <= index <= len(styles):
+        ctx.diagnose(
+            "theme-line-reference-omitted",
+            f"Theme line style {index} cannot be resolved",
+            "retain the local outline without inventing a theme stroke",
+        )
+        return sp_pr
+
+    line = copy.deepcopy(styles[index - 1])
+    reference_color = find_color_elem(reference)
+    if reference_color is not None:
+        for owner in line.iter():
+            for child in list(owner):
+                if child.tag == f"{{{NS['a']}}}schemeClr" and child.get("val") == "phClr":
+                    color = copy.deepcopy(reference_color)
+                    color.extend(copy.deepcopy(list(child)))
+                    owner[list(owner).index(child)] = color
+
+    local_line = sp_pr.find("a:ln", NS) if sp_pr is not None else None
+    if local_line is not None:
+        line.attrib.update(local_line.attrib)
+        exclusive_children = (
+            {"noFill", "solidFill", "gradFill", "pattFill", "blipFill", "grpFill"},
+            {"prstDash", "custDash"},
+            {"round", "bevel", "miter"},
+        )
+        for local in local_line:
+            name = local.tag.rsplit("}", 1)[-1]
+            family = next((names for names in exclusive_children if name in names), {name})
+            for inherited in list(line):
+                if inherited.tag.rsplit("}", 1)[-1] in family:
+                    line.remove(inherited)
+            line.append(copy.deepcopy(local))
+    properties = ET.Element(f"{{{NS['p']}}}spPr")
+    properties.append(line)
+    return properties
 
 
 def _resolve_text_style_default(node: ShapeNode, ctx: AssemblyContext) -> str:
@@ -1626,9 +1757,9 @@ def _convert_picture(node: ShapeNode, ctx: AssemblyContext, *, top_level: bool) 
             "replace only this picture with a visible placeholder",
         )
         return _fallback_node_svg(node, ctx, top_level=top_level)
+    _diagnose_picture_result(ctx, result)
     if not result.svg:
         return ""
-    _diagnose_picture_result(ctx, result)
     ctx.media.update(result.media)
     effect = convert_effects(
         sp_pr,
@@ -1707,6 +1838,15 @@ def _convert_connector(node: ShapeNode, ctx: AssemblyContext, *, top_level: bool
 
 def _convert_group(node: ShapeNode, ctx: AssemblyContext, *, top_level: bool) -> str:
     """Render group contents flat (children already remapped to slide space)."""
+    if node.children and (
+        (node.xfrm.w == 0 and node.xfrm.ch_w is not None and node.xfrm.ch_w > 0)
+        or (node.xfrm.h == 0 and node.xfrm.ch_h is not None and node.xfrm.ch_h > 0)
+    ):
+        ctx.diagnose(
+            "group-collapsed-axis",
+            "The source group maps a positive child-coordinate extent to a zero frame axis",
+            "retain the source coordinate mapping; child geometry may collapse or be omitted",
+        )
     parent_fill = ctx.group_fills[-1] if ctx.group_fills else None
     group_properties = node.xml.find("p:grpSpPr", NS)
     try:
@@ -1779,6 +1919,13 @@ def _convert_graphic_fallback(node: ShapeNode, ctx: AssemblyContext,
     """
     graphic_data = node.xml.find("a:graphic/a:graphicData", NS)
     uri = graphic_data.attrib.get("uri", "graphicFrame") if graphic_data is not None else "graphicFrame"
+    if node.xfrm.w <= 0 or node.xfrm.h <= 0:
+        ctx.diagnose(
+            "graphic-degenerate-frame",
+            "Source graphic has a missing or nonpositive frame: "
+            + _object_metadata(node, ctx)["data-pptx-frame"],
+            "retain recoverable content and the exact frame; no positive frame is invented",
+        )
 
     if uri == "http://schemas.openxmlformats.org/drawingml/2006/table":
         rendered, replacement_attrs, payload_metadata = _render_graphic_table(
@@ -1875,6 +2022,12 @@ def _convert_graphic_fallback(node: ShapeNode, ctx: AssemblyContext,
             extra_attrs=[f'{_SOURCE_PROXY_ATTRIBUTE}="native-restore"'],
         )
 
+    if ctx.render_graphic_previews:
+        ctx.diagnose(
+            "graphic-preview-unavailable",
+            f"Source graphic {uri} has no recoverable visual preview",
+            "retain native metadata when available and display the labelled source-frame placeholder",
+        )
     label = uri.rsplit("/", 1)[-1]
     placeholder = (
         f'<rect x="{fmt_num(node.xfrm.x)}" y="{fmt_num(node.xfrm.y)}" '
@@ -2240,9 +2393,9 @@ def _render_graphic_preview(node: ShapeNode, ctx: AssemblyContext) -> str:
         asset_name_map=ctx.asset_name_map,
         strict=ctx.strict,
     )
+    _diagnose_picture_result(ctx, result)
     if not result.svg:
         return ""
-    _diagnose_picture_result(ctx, result)
     ctx.media.update(result.media)
     return result.svg
 

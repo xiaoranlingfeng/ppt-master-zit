@@ -35,7 +35,9 @@ from image_backends.backend_common import (
     http_error,
     is_permanent_error,
     is_rate_limit_error,
+    nearest_aspect_ratio,
     normalize_image_size,
+    note_aspect_ratio,
     require_api_key,
     resolve_output_path,
     retry_delay,
@@ -148,6 +150,10 @@ def generate(prompt: str,
     resolved_model = model or os.environ.get("SILICONFLOW_MODEL") or DEFAULT_MODEL
     _validate_model(resolved_model)
     normalized_size = normalize_image_size(image_size)
+    requested_ratio = aspect_ratio
+    ratios = ASPECT_RATIO_SIZE_MAP.get(normalized_size) or ASPECT_RATIO_SIZE_MAP["1K"]
+    aspect_ratio = nearest_aspect_ratio(aspect_ratio, ratios)
+    note_aspect_ratio(requested_ratio, aspect_ratio)
     _resolve_size(aspect_ratio, normalized_size)
     api_key = require_api_key(
         "SILICONFLOW_API_KEY",
@@ -175,9 +181,9 @@ def generate(prompt: str,
             if attempt >= max_retries:
                 break
             limited = is_rate_limit_error(exc)
-            delay = retry_delay(attempt, rate_limited=limited)
+            delay = retry_delay(attempt, rate_limited=limited, exc=last_error)
             label = "Rate limit hit" if limited else f"Error: {exc}"
             print(f"\n  [WARN] {label}. Retrying in {delay}s...")
             time.sleep(delay)
 
-    raise RuntimeError(f"Failed after {max_retries + 1} attempts. Last error: {last_error}")
+    raise RuntimeError(f"Failed after {max_retries + 1} attempts. Last error: {last_error}") from last_error

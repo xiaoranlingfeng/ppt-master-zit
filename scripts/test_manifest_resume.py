@@ -32,8 +32,11 @@ class FakeBackend:
 
     def generate(self, prompt, aspect_ratio, image_size, output_dir,
                  filename=None, model=None):
+        # v6.8.0 passes the manifest filename with its extension; every real
+        # backend peels a known image extension once, keeping dots in the stem.
         self.calls.append(filename)
-        target = Path(output_dir) / f"{filename}.png"
+        stem = Path(filename).stem if filename else "image"
+        target = Path(output_dir) / f"{stem}.png"
         Image.new("RGB", (16, 16), "navy").save(target)
         return str(target)
 
@@ -87,7 +90,7 @@ class TestManifestResume(unittest.TestCase):
     def test_writes_signature_and_sidecar(self):
         _write_manifest(self.dir)
         data = self._run()
-        self.assertEqual(self.backend.calls, ["a"])
+        self.assertEqual(self.backend.calls, ["a.png"])
         self.assertEqual(data["items"][0]["status"], "Generated")
         self.assertTrue(data["items"][0].get("prompt_sha"))
         sidecar = Path(self.dir) / image_gen.MANIFEST_STATE_FILENAME

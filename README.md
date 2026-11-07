@@ -2,7 +2,7 @@
 
 > Former names 曾用名: `ppt-master-qwen-image-2-1` · `ppt-master-zit` — renamed 2026-10-13; the fork is defined by its local ComfyUI backend, not by any single model.
 
-> **Upstream lock 上游锁定**: this fork is rebased onto official ppt-master **v6.7.0** (MIT, Hugo He). Fork releases are tagged `v<upstream>-comfyui.<n>` (`v6.7.0-comfyui.1` shipped the MOSS + interview-gate baseline; the current local build is `v6.7.0-comfyui.2`); pin those tags instead of `main` if you need a stable point. A GitHub Actions `smoke` workflow runs the GPU-free unit tests (backend, export regressions, manifest resume) on every push.
+> **Upstream lock 上游锁定**: this fork is rebased onto official ppt-master **v6.8.0** (MIT, Hugo He). Fork releases are tagged `v<upstream>-comfyui.<n>` (`v6.7.0-comfyui.1` shipped the MOSS + interview-gate baseline, `v6.7.0-comfyui.2` the manifest-resume + rendered-output gate; the current build is `v6.8.0-comfyui.1`); pin those tags instead of `main` if you need a stable point. A GitHub Actions `smoke` workflow runs the GPU-free unit tests (backend, export regressions, manifest resume) on every push.
 
 [English](#english) · [中文](#中文)
 
@@ -12,7 +12,7 @@
 
 ## English
 
-**PPT Master + local ComfyUI image backend.** This is a personal-machine fork of [ppt-master](https://github.com/hugohe3/ppt-master) (v6.7.0, MIT, Copyright © 2025-2026 Hugo He). The entire editable-PPTX generation workflow is identical to upstream; the one difference is that **AI slide imagery defaults to your local ComfyUI running the Qwen-Image-2.1 text-to-image workflow — no API key, no cost, nothing leaves your machine.** Two more local workflows are selectable per deck: MOSS-Image SFT for literal, layout-steerable art, and the legacy "zit基础" (Z-Image Turbo) for speed.
+**PPT Master + local ComfyUI image backend.** This is a personal-machine fork of [ppt-master](https://github.com/hugohe3/ppt-master) (v6.8.0, MIT, Copyright © 2025-2026 Hugo He). The entire editable-PPTX generation workflow is identical to upstream; the one difference is that **AI slide imagery defaults to your local ComfyUI running the Qwen-Image-2.1 text-to-image workflow — no API key, no cost, nothing leaves your machine.** Two more local workflows are selectable per deck: MOSS-Image SFT for literal, layout-steerable art, and the legacy "zit基础" (Z-Image Turbo) for speed.
 
 ### What differs from upstream
 
@@ -41,7 +41,7 @@ New / modified files:
 - `scripts/test_backend_comfyui_smoke.py`, `test_export_regressions.py`, `test_manifest_resume.py` + `.github/workflows/smoke.yml` — GPU-free unit tests (dimension resolution, placeholder injection, backend registry, sampler-override warnings, inherited bullets, manifest resume) run on every push to `scripts/`
 - `.env.example` / `.gitignore` / `README.md` — local config docs; personal `.env` is never committed
 
-Everything else matches upstream v6.7.0 (including glyph-accurate text measurement, native chart/table mirroring, the multilingual per-script calibration of v6.4.0, the Edit-Native round-trip rework of v6.5.0, and the v6.6.0 end-to-end-run fixes), plus the four local export fixes behind the rendered-output gate: explicit `buNone` on generated prose, cleared Master `bodyStyle` bullets, bullet scope extended past `body`/`subtitle`, and the multiline-carrier contract.
+Everything else matches upstream v6.8.0 (including glyph-accurate text measurement, native chart/table mirroring, the v6.7.1–v6.7.3 live-preview draft persistence, source-import overwrite guards and Edit-Native round-trip fixes, and the v6.8.0 in-place chart patching, any-W:H aspect ratios and `Retry-After` handling), plus the four local export fixes behind the rendered-output gate: explicit `buNone` on generated prose, cleared Master `bodyStyle` bullets, bullet scope extended past `body`/`subtitle`, and the multiline-carrier contract.
 
 ### Quick start
 
@@ -111,7 +111,7 @@ MIT — upstream copyright belongs to [Hugo He](https://github.com/hugohe3/ppt-m
 
 ## 中文
 
-**PPT Master + 本机 ComfyUI 配图后端** — 这是 [ppt-master](https://github.com/hugohe3/ppt-master) (v6.7.0, MIT, Copyright © 2025-2026 Hugo He) 的本机定制分支：整套可编辑 PPTX 生成工作流与官方一致，唯一区别是 **AI 配图默认走本机 ComfyUI 的 Qwen-Image-2.1 文生图工作流，不需要任何 API Key**。另外两套本机工作流可按 deck 切换：MOSS-Image SFT 擅长字面构图与版式可控，旧「zit基础」（Z-Image Turbo）主打速度。
+**PPT Master + 本机 ComfyUI 配图后端** — 这是 [ppt-master](https://github.com/hugohe3/ppt-master) (v6.8.0, MIT, Copyright © 2025-2026 Hugo He) 的本机定制分支：整套可编辑 PPTX 生成工作流与官方一致，唯一区别是 **AI 配图默认走本机 ComfyUI 的 Qwen-Image-2.1 文生图工作流，不需要任何 API Key**。另外两套本机工作流可按 deck 切换：MOSS-Image SFT 擅长字面构图与版式可控，旧「zit基础」（Z-Image Turbo）主打速度。
 
 ### 与上游的差异
 
@@ -140,7 +140,7 @@ MIT — upstream copyright belongs to [Hugo He](https://github.com/hugohe3/ppt-m
 - `scripts/test_backend_comfyui_smoke.py`、`test_export_regressions.py`、`test_manifest_resume.py` + `.github/workflows/smoke.yml` — 无 GPU 依赖的单元测试（尺寸解析、占位符注入、编码器分辨率跟随档位、后端注册表、采样覆盖告警、继承项目符号、断点续跑），每次推送到 `scripts/` 自动执行
 - `.env.example` / `.gitignore` / `README.md` — 本机配置文档；含个人路径的 `.env` 永不入库
 
-其余文件与官方 v6.7.0 一致（含真实字形宽度度量、原生图表/表格镜像导出、v6.4.0 多语种按文字体系的宽度校准、v6.5.0 Edit Native 往返重做、v6.6.0 全流程实测修复等上游能力），另加渲染验收门背后的四项本机导出修复：正文显式 `buNone`、清除母版 `bodyStyle` 项目符号、符号作用域扩到 `body`/`subtitle` 之外、多行载体契约。
+其余文件与官方 v6.8.0 一致（含真实字形宽度度量、原生图表/表格镜像导出、v6.7.1–v6.7.3 的 live preview 草稿持久化与源导入防覆盖、Edit Native 往返修复，以及 v6.8.0 的图表原地改写、任意 W:H 宽高比与 `Retry-After` 限流处理），另加渲染验收门背后的四项本机导出修复：正文显式 `buNone`、清除母版 `bodyStyle` 项目符号、符号作用域扩到 `body`/`subtitle` 之外、多行载体契约。
 
 ### 快速上手
 

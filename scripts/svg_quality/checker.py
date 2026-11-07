@@ -173,6 +173,7 @@ except ImportError:
     _parse_pattern_colors = None
 
 try:
+    from svg_to_pptx.drawingml.context import ConvertContext as _ConvertContext
     from svg_to_pptx.drawingml.elements import (
         drawingml_text_frame_width_emu as _drawingml_text_frame_width_emu,
         empty_clip_path_reason as _empty_clip_path_reason,
@@ -182,6 +183,7 @@ try:
         validate_preset_geometry_metadata as _validate_preset_geometry_metadata,
     )
 except ImportError:
+    _ConvertContext = None
     _drawingml_text_frame_width_emu = None
     _empty_clip_path_reason = None
     _estimate_single_line_text_frame_width = None
@@ -1732,11 +1734,48 @@ class SVGQualityChecker:
                     result,
                     included_text_ids,
                 )
+                self._check_roundtrip_chart_edits(root, baseline_root, source_document, result)
             result['passed'] = len(result['errors']) == 0
         except Exception as exc:
             result['errors'].append(f"Failed to read file: {exc}")
             result['passed'] = False
         return self._record_result(result)
+
+    @staticmethod
+    def _check_roundtrip_chart_edits(root, baseline_root, source_document, result: Dict) -> None:
+        """Surface source-only chart losses before the round-trip export."""
+        from authoring_roundtrip import (
+            _layered_ref_index,
+            _parse_svg,
+            chart_rebuild_warning,
+            prepare_imported_chart_edit,
+        )
+        baseline_by_ref = {node.get('data-pptx-source-ref'): node for node in baseline_root.iter()
+                           if node.get('data-pptx-source-ref')}
+        candidates = [node for node in root.iter() if node.get('data-pptx-replace-with') == 'chart'
+                      and node.get('data-pptx-source-ref') in baseline_by_ref]
+        if not candidates:
+            return
+        sources = _layered_ref_index(_parse_svg(source_document.layered_source_path))
+        project_path = source_document.authoring_path.parent.parent
+        for node in candidates:
+            source_ref = node.get('data-pptx-source-ref')
+            source = sources.get(source_ref)
+            if source is None:
+                continue
+            try:
+                _package, reason = prepare_imported_chart_edit(
+                    node, baseline_by_ref[source_ref], source,
+                    current_root=root, baseline_root=baseline_root,
+                )
+            except RuntimeError as exc:
+                result['errors'].append(f"{_element_label(node)}: {exc}")
+                continue
+            if reason:
+                result['warnings'].append(
+                    f"{_element_label(node)} source_ref={source_ref}: "
+                    + chart_rebuild_warning(project_path, source_document.source_slide, source_ref, reason)
+                )
 
     @staticmethod
     def _check_roundtrip_unsupported_table_edits(
@@ -2292,8 +2331,8 @@ class SVGQualityChecker:
                 detail = f': {frame_error}' if frame_error else ''
                 result['warnings'].append(
                     f'Cannot verify owning frame for edited {text_label}{detail}; '
-                    'keep data-pptx-frame on the logical object or place a '
-                    'rect frame beside the text'
+                    'set data-pptx-bounds on the authored text group or group '
+                    'the text with its containing rect; preserve existing imported frames'
                 )
                 continue
             metrics = self._bounds_overflow_metrics(estimated, frame)
@@ -2332,8 +2371,8 @@ class SVGQualityChecker:
             )
             if frame_is_inferred:
                 result['warnings'].append(
-                    f'{finding}; frame inferred from nearest rect sibling; '
-                    'add data-pptx-frame to make this blocking'
+                    f'{finding}; frame inferred from a containing rect sibling; '
+                    'set data-pptx-bounds on the authored text group to declare its bounds'
                 )
             else:
                 result['errors'].append(finding)
@@ -2348,6 +2387,8 @@ class SVGQualityChecker:
         while current is not None:
             if current.get('data-pptx-frame') is not None:
                 return current.get('data-pptx-source-ref')
+            if current.get('data-pptx-bounds') is not None:
+                return None
             current = parent_by_id.get(id(current))
         return None
 
@@ -2411,12 +2452,16 @@ class SVGQualityChecker:
         str | None,
         bool,
     ]:
-        """Resolve an explicit logical frame or the nearest rect sibling."""
+        """Resolve owning bounds or a containing rect in the text's own group."""
         current: ET.Element | None = text_element
         while current is not None:
-            raw_frame = current.get('data-pptx-frame')
+            attribute = (
+                'data-pptx-frame' if current.get('data-pptx-frame') is not None
+                else 'data-pptx-bounds'
+            )
+            raw_frame = current.get(attribute)
             if raw_frame is not None:
-                label = f'{_element_label(current)} data-pptx-frame'
+                label = f'{_element_label(current)} {attribute}'
                 try:
                     frame = _parse_positive_bounds(raw_frame)
                 except ValueError as exc:
@@ -2438,62 +2483,54 @@ class SVGQualityChecker:
 
         if _parse_project_geometry_length is None:
             return None, None, 'the SVG length parser is unavailable', False
-        current = text_element
+        parent = parent_by_id.get(id(text_element))
+        if parent is None or _local_name(parent) != 'g':
+            return None, None, None, False
+        try:
+            anchor_x = _parse_project_geometry_length(text_element.get('x') or '0', 'x')
+            anchor_y = _parse_project_geometry_length(text_element.get('y') or '0', 'y')
+        except (TypeError, ValueError):
+            return None, None, 'the text anchor cannot be resolved', False
+        anchor = cls._transformed_rect_bounds(
+            text_element, (anchor_x, anchor_y, 0, 0), parent_by_id,
+        )
+        if anchor is None:
+            return None, None, 'the text anchor has an unresolved transform', False
         rect_errors: List[str] = []
-        while current is not None:
-            parent = parent_by_id.get(id(current))
-            if parent is None:
-                break
-            siblings = list(parent)
+        siblings = list(parent)
+        current_index = siblings.index(text_element)
+        rects = sorted(
+            (
+                (abs(index - current_index), index, sibling)
+                for index, sibling in enumerate(siblings)
+                if _local_name(sibling) == 'rect'
+                and sibling.get('data-pptx-role') not in {'decoration', 'background'}
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+        for _distance, _index, rect in rects:
+            label = _element_label(rect)
             try:
-                current_index = siblings.index(current)
-            except ValueError:
-                current_index = 0
-            rects = sorted(
-                (
-                    (abs(index - current_index), index, sibling)
-                    for index, sibling in enumerate(siblings)
-                    if _local_name(sibling) == 'rect'
-                ),
-                key=lambda item: (item[0], item[1]),
-            )
-            for _distance, _index, rect in rects:
-                label = _element_label(rect)
-                try:
-                    x = _parse_project_geometry_length(
-                        rect.get('x') or '0',
-                        'x',
-                    )
-                    y = _parse_project_geometry_length(
-                        rect.get('y') or '0',
-                        'y',
-                    )
-                    width = _parse_project_geometry_length(
-                        rect.get('width'),
-                        'width',
-                    )
-                    height = _parse_project_geometry_length(
-                        rect.get('height'),
-                        'height',
-                    )
-                    if (
-                        not all(math.isfinite(value) for value in (x, y, width, height))
-                        or width <= 0
-                        or height <= 0
-                    ):
-                        raise ValueError('must use finite positive width and height')
-                except (TypeError, ValueError) as exc:
-                    rect_errors.append(f'{label} {exc}')
-                    continue
-                transformed = cls._transformed_rect_bounds(
-                    rect,
-                    (x, y, width, height),
-                    parent_by_id,
-                )
-                if transformed is not None:
-                    return label, transformed, None, True
+                x = _parse_project_geometry_length(rect.get('x') or '0', 'x')
+                y = _parse_project_geometry_length(rect.get('y') or '0', 'y')
+                width = _parse_project_geometry_length(rect.get('width'), 'width')
+                height = _parse_project_geometry_length(rect.get('height'), 'height')
+                if (
+                    not all(math.isfinite(value) for value in (x, y, width, height))
+                    or width <= 0 or height <= 0
+                ):
+                    raise ValueError('must use finite positive width and height')
+            except (TypeError, ValueError) as exc:
+                rect_errors.append(f'{label} {exc}')
+                continue
+            transformed = cls._transformed_rect_bounds(rect, (x, y, width, height), parent_by_id)
+            if transformed is None:
                 rect_errors.append(f'{label} has an unresolved transform')
-            current = parent
+            elif (
+                transformed[0] <= anchor[0] <= transformed[2]
+                and transformed[1] <= anchor[1] <= transformed[3]
+            ):
+                return label, transformed, None, True
         return (
             None,
             None,
@@ -5508,11 +5545,14 @@ class SVGQualityChecker:
             return
 
         issues = set()
+        geometry_context = _ConvertContext(defs={
+            elem.get('id'): elem for elem in root.iter() if elem.get('id')
+        })
         for elem in marked:
             tag = _local_name(elem)
             elem_id = elem.get('id')
             label = f'<{tag} id="{elem_id}">' if elem_id else f'<{tag}>'
-            for error in _validate_preset_geometry_metadata(elem):
+            for error in _validate_preset_geometry_metadata(elem, geometry_context):
                 issues.add(f'{label} has invalid PPTX shape metadata: {error}')
         if _validate_authored_preset_tree is None:
             if any(

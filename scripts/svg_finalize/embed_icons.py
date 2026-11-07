@@ -143,6 +143,11 @@ def _base_geometry(base_size: BaseGeometry) -> tuple[float, float, float, float]
     return 0.0, 0.0, float(base_size), float(base_size)
 
 
+# Either quote style: a single-quoted marker silently fell back to a recolored
+# monochrome icon, dropping the asset's text, colors, and group transforms.
+_PRESERVE_COLOR_RE = re.compile(r'data-icon-style\s*=\s*["\']preserve-color["\']')
+
+
 def _is_preserve_color_asset(content: str) -> bool:
     """Project illustrations are vector assets, not recolorable monochrome icons.
 
@@ -150,13 +155,16 @@ def _is_preserve_color_asset(content: str) -> bool:
     extract_svg_assets.py and is the single source of truth — hand-authored
     multi-color assets must carry it to keep their colors and aspect ratio.
     """
-    return 'data-icon-style="preserve-color"' in content
+    return _PRESERVE_COLOR_RE.search(content) is not None
 
 
 def _detect_icon_style(content: str) -> str:
     """Detect whether an icon is fill-based or stroke-based."""
-    # stroke="currentColor" with fill="none" → stroke style
-    if 'stroke="currentColor"' in content and 'fill="none"' in content:
+    # stroke="currentColor" with fill="none" → stroke style (either quote)
+    if (
+        re.search(r'stroke\s*=\s*["\']currentColor["\']', content)
+        and re.search(r'fill\s*=\s*["\']none["\']', content)
+    ):
         return 'stroke'
     return 'fill'
 
@@ -388,6 +396,16 @@ def parse_use_element(use_match: str) -> dict[str, str | float]:
     if stroke_width_value is not None:
         attrs['stroke-width'] = _validate_icon_attr(stroke_width_value, 'stroke-width', _ICON_STROKE_WIDTH_RE)
 
+    # These belong to the authored object, rather than the icon's local
+    # geometry. Keep them on the replacement group, including visibility.
+    for match in re.finditer(
+        r'''(?<!\S)(id|class|style|opacity|display|visibility|fill-opacity|stroke-opacity|'''
+        r'''clip-path|filter|data-pptx-[\w.-]+|data-edit-[\w.-]+)\s*=\s*(["'])(.*?)\2''',
+        use_match,
+        re.DOTALL,
+    ):
+        attrs[match.group(1)] = html.unescape(match.group(3))
+
     return attrs
 
 
@@ -456,13 +474,21 @@ def generate_icon_group(attrs: dict[str, str | float], elements: list[str], styl
         )
 
     elements_str = '\n    '.join(elements)
+    context_attrs = ''.join(
+        f' {key}="{_xml_attr(value)}"'
+        for key, value in attrs.items()
+        if key in {
+            'id', 'class', 'style', 'opacity', 'display', 'visibility',
+            'fill-opacity', 'stroke-opacity', 'clip-path', 'filter',
+        } or key.startswith(('data-pptx-', 'data-edit-'))
+    )
 
     if style == 'preserve':
         if min_x or min_y:
             inner_transform = f'translate({_format_number(-min_x)}, {_format_number(-min_y)})'
             elements_str = f'<g transform="{_xml_attr(inner_transform)}">\n    {elements_str}\n    </g>'
         return f'''<!-- icon: {_xml_attr(icon_name)} -->
-  <g transform="{_xml_attr(transform)}">
+  <g transform="{_xml_attr(transform)}"{context_attrs}>
     {elements_str}
   </g>'''
 
@@ -476,7 +502,7 @@ def generate_icon_group(attrs: dict[str, str | float], elements: list[str], styl
         color_attrs = f'fill="{_xml_attr(color)}"'
 
     return f'''<!-- icon: {_xml_attr(icon_name)} -->
-  <g transform="{_xml_attr(transform)}" {color_attrs}>
+  <g transform="{_xml_attr(transform)}" {color_attrs}{context_attrs}>
     {elements_str}
   </g>'''
 

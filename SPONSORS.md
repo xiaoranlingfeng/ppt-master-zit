@@ -8,7 +8,7 @@ Want to support the project or discuss a partnership? See the [sponsorship guide
 
 ## Current Model Recommendation
 
-For the best results, use **[Kimi K3](https://www.kimi.com/code/?aff=ppt-master)** (or Claude) to drive the workflow, paired with **`gpt-image-2`** (OpenAI) or **`gemini-nano-banana-2.1`** (Google) for AI image generation. If model capability is limiting output quality, upgrade the driving model before weakening the workflow or its quality requirements.
+For the best results, use **[Kimi K3](https://www.kimi.com/code/?aff=ppt-master)** (or Claude) to drive the workflow, paired with **`gpt-image-2.5-sunburst`** (OpenAI) or **`gemini-nano-banana-2.1`** (Google) for AI image generation. If model capability is limiting output quality, upgrade the driving model before weakening the workflow or its quality requirements.
 
 ## Kimi
 
@@ -39,12 +39,6 @@ Thanks to [Kimi](https://www.kimi.com/code/?aff=ppt-master) for sponsoring PPT M
 <a href="https://runapi.host/register?aff=WMLJ"><img src="https://raw.githubusercontent.com/hugohe3/ppt-master/main/docs/assets/sponsors/runapi.png" alt="RunAPI" width="150"></a>
 
 [RunAPI](https://runapi.host/register?aff=WMLJ) provides access to 150+ models, including OpenAI, Claude, Gemini, DeepSeek, and Grok, through one API key. Register through the dedicated link and contact an administrator to claim **¥7 in free credit**.
-
-### APIMart
-
-<a href="https://go.apimart.ai/gh-ppt-master1"><img src="https://raw.githubusercontent.com/hugohe3/ppt-master/main/docs/assets/sponsors/apimart.png" alt="APIMart" width="150"></a>
-
-[APIMart](https://go.apimart.ai/gh-ppt-master1) is a low-cost API platform for AI image and video generation, with GPT-Image-2 from **$0.006 per image**. One async API covers both image and video: submit a task, get an ID, and fetch results by polling or callback. Pay-as-you-go with no monthly fee; register through the dedicated link to get started.
 
 ## Infrastructure Support
 

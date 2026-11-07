@@ -8,7 +8,7 @@ PPT Master 始终免费开源。以下赞助方共同支持项目的持续维护
 
 ## 当前模型推荐
 
-追求最佳效果，语言模型选 **[Kimi K3](https://www.kimi.com/code/?aff=ppt-master)**（或 Claude）驱动流程，搭配 AI 生图模型 **`gpt-image-2`**（OpenAI）或 **`gemini-nano-banana-2.1`**（Google）。如果模型能力正在拖累产出质量，应先升级驱动模型，而不是削弱工作流或质量要求。
+追求最佳效果，语言模型选 **[Kimi K3](https://www.kimi.com/code/?aff=ppt-master)**（或 Claude）驱动流程，搭配 AI 生图模型 **`gpt-image-2.5-sunburst`**（OpenAI）或 **`gemini-nano-banana-2.1`**（Google）。如果模型能力正在拖累产出质量，应先升级驱动模型，而不是削弱工作流或质量要求。
 
 ## Kimi
 
@@ -39,12 +39,6 @@ PPT Master 始终免费开源。以下赞助方共同支持项目的持续维护
 <a href="https://runapi.host/register?aff=WMLJ"><img src="https://raw.githubusercontent.com/hugohe3/ppt-master/main/docs/assets/sponsors/runapi.png" alt="RunAPI" width="150"></a>
 
 [RunAPI](https://runapi.host/register?aff=WMLJ) 通过一个 API Key 提供 OpenAI、Claude、Gemini、DeepSeek、Grok 等 150+ 主流模型。通过专属链接注册并联系管理员，即可领取 **¥7 免费额度**。
-
-### APIMart
-
-<a href="https://go.apimart.ai/gh-ppt-master1"><img src="https://raw.githubusercontent.com/hugohe3/ppt-master/main/docs/assets/sponsors/apimart.png" alt="APIMart" width="150"></a>
-
-[APIMart](https://go.apimart.ai/gh-ppt-master1) 是专注 AI 图片/视频生成的低价 API 平台，GPT-Image-2 低至 **$0.006/张**。图片、视频共用一套异步 API：提交任务拿 ID，轮询或回调取结果。按量付费、无月费，通过专属链接注册即可开用。
 
 ## 基础设施支持
 

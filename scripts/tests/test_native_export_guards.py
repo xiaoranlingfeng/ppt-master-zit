@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 import json
 import sys
@@ -23,6 +25,7 @@ from pptx_shapes.formula import OOXML_COORDINATE_MAX  # noqa: E402
 from animation_config import main as animation_config_main  # noqa: E402
 from pptx_gradients import native_gradient_metadata, preserved_native_gradient_xml  # noqa: E402
 from svg_finalize.flatten_tspan import flatten_text_with_tspans  # noqa: E402
+from svg_authoring_view import project_svg_batch  # noqa: E402
 from svg_quality.checker import SVGQualityChecker  # noqa: E402
 from svg_to_pptx.animation_config import (  # noqa: E402
     build_group_listing,
@@ -35,6 +38,7 @@ from svg_to_pptx.drawingml.converter import (  # noqa: E402
     convert_svg_to_slide_shapes,
 )
 from svg_to_pptx.drawingml.styles import build_gradient_fill  # noqa: E402
+from svg_to_pptx.drawingml.elements import validate_preset_geometry_metadata  # noqa: E402
 from svg_to_pptx.pptx_package.discovery import find_notes_files  # noqa: E402
 
 
@@ -68,6 +72,209 @@ class NativeExportGuardTests(unittest.TestCase):
 
     def _check(self) -> dict:
         return SVGQualityChecker(quick_generate=True).check_file(str(self.svg_path))
+
+    def _custom_connector(self, frame: str, path: str, *, transform: str = '') -> str:
+        custom = (
+            f'<a:custGeom xmlns:a="{NS["a"]}"><a:avLst/>'
+            '<a:gdLst><a:gd name="middle" fmla="*/ w 1 2"/></a:gdLst>'
+            '<a:ahLst/><a:cxnLst><a:cxn ang="0"><a:pos x="r" y="t"/>'
+            '</a:cxn></a:cxnLst><a:rect l="l" t="t" r="r" b="b"/>'
+            '<a:pathLst><a:path w="300" h="100" fill="none">'
+            '<a:moveTo><a:pt x="0" y="0"/></a:moveTo>'
+            '<a:lnTo><a:pt x="300" y="100"/></a:lnTo></a:path>'
+            '<a:path w="300" h="100" fill="none">'
+            '<a:moveTo><a:pt x="75" y="25"/></a:moveTo>'
+            '<a:lnTo><a:pt x="225" y="75"/></a:lnTo></a:path>'
+            '</a:pathLst></a:custGeom>'
+        )
+        encoded = base64.b64encode(custom.encode('utf-8')).decode('ascii')
+        digest = hashlib.sha256(path.encode('utf-8')).hexdigest()
+        self._svg(
+            '<g id="custom" data-pptx-semantic-object="shape" '
+            'data-pptx-object="connector" data-pptx-geometry-kind="custom" '
+            f'data-pptx-frame="{frame}" {transform}>'
+            f'<path d="{path}" data-pptx-part="geometry" '
+            f'data-pptx-custgeom="{encoded}" data-pptx-geometry-sha256="{digest}" '
+            'fill="none" stroke="#3060C0" stroke-width="2"/></g>'
+        )
+        return custom
+
+    def test_semantic_custom_connector_preserves_source_geometry(self) -> None:
+        for frame, path, transform in (
+            ('120 180 300 0', 'M 120 180 L 420 180 M 195 180 L 345 180', ''),
+            ('120 180 0 100', 'M 120 180 L 120 280 M 120 205 L 120 255', ''),
+            ('120 180 300 100', 'M 120 180 L 420 280 M 195 205 L 345 255', ''),
+            ('120 180 300 0', 'M 120 180 L 420 180 M 195 180 L 345 180',
+             'transform="rotate(45 270 180)"'),
+            ('120 180 300 0', 'M 120 180 L 420 180 M 195 180 L 345 180',
+             'transform="translate(540 0) scale(-1 1)"'),
+        ):
+            with self.subTest(frame=frame, transform=transform):
+                custom = self._custom_connector(frame, path, transform=transform)
+                xml, *_ = convert_svg_to_slide_shapes(self.svg_path, resource_root=self.root)
+                self.assertIn(custom, xml)
+                slide = ET.fromstring(xml)
+                self.assertEqual(len(slide.findall('.//p:cxnSp', NS)), 1)
+                ext = slide.find('.//p:cxnSp/p:spPr/a:xfrm/a:ext', NS)
+                self.assertEqual(int(ext.get('cx')), int(float(frame.split()[2]) * 9525))
+                self.assertEqual(int(ext.get('cy')), int(float(frame.split()[3]) * 9525))
+
+    def test_semantic_custom_connector_recompiles_an_edited_path(self) -> None:
+        path = 'M 120 180 L 420 280 M 195 205 L 345 255'
+        custom = self._custom_connector('120 180 300 100', path)
+        self.svg_path.write_text(
+            self.svg_path.read_text(encoding='utf-8').replace(path, 'M 120 180 L 300 240'),
+            encoding='utf-8',
+        )
+        xml, *_ = convert_svg_to_slide_shapes(self.svg_path, resource_root=self.root)
+        self.assertNotIn(custom, xml)
+        slide = ET.fromstring(xml)
+        self.assertEqual(len(slide.findall('.//p:cxnSp', NS)), 1)
+        self.assertEqual(len(slide.findall('.//a:custGeom/a:pathLst/a:path', NS)), 1)
+
+    def test_custom_connector_projection_keeps_source_geometry(self) -> None:
+        custom = self._custom_connector('120 180 300 0', 'M 120 180 L 420 180')
+        authoring_dir = self.root / 'authoring'
+        projected = authoring_dir / self.svg_path.name
+        project_svg_batch(
+            [(self.svg_path, projected)], self.root, authoring_dir,
+            force=False, projection_kind='layered',
+        )
+        xml, *_ = convert_svg_to_slide_shapes(projected, resource_root=self.root)
+        self.assertIn(custom, xml)
+        self.assertEqual(len(ET.fromstring(xml).findall('.//p:cxnSp', NS)), 1)
+
+    def test_semantic_custom_connector_without_source_geometry_still_fails(self) -> None:
+        self._svg(
+            '<g data-pptx-semantic-object="shape" data-pptx-object="connector" '
+            'data-pptx-geometry-kind="custom" data-pptx-frame="120 180 300 100">'
+            '<path d="M 120 180 L 420 280" data-pptx-part="geometry" '
+            'stroke="#3060C0" fill="none"/></g>'
+        )
+        with self.assertRaisesRegex(SvgNativeConversionError, 'requires preset or preserved'):
+            self._export()
+
+    def test_stroked_zero_axis_presets_keep_the_native_frame(self) -> None:
+        for preset in ('rect', 'ellipse'):
+            for width, height in ((300, 0), (0, 100)):
+                for transform in ('', 'transform="rotate(45 120 180)"'):
+                    with self.subTest(preset=preset, frame=(width, height), transform=transform):
+                        self._svg(
+                            '<g data-pptx-semantic-object="shape" data-pptx-object="shape" '
+                            f'data-pptx-prst="{preset}" data-pptx-frame="120 180 {width} {height}" '
+                            f'{transform}><path data-pptx-part="geometry" '
+                            f'd="M 120 180 L {120 + width} {180 + height}" '
+                            'stroke="#3060C0" stroke-width="2" fill="none"/></g>'
+                        )
+                        root = ET.parse(self.svg_path).getroot()
+                        self.assertEqual(validate_preset_geometry_metadata(root[0]), [])
+                        slide = self._export()
+                        geometry = slide.find('.//p:sp/p:spPr/a:prstGeom', NS)
+                        self.assertEqual(geometry.get('prst'), preset)
+                        ext = slide.find('.//p:sp/p:spPr/a:xfrm/a:ext', NS)
+                        self.assertEqual(ext.attrib, {'cx': str(width * 9525), 'cy': str(height * 9525)})
+
+    def test_stroked_zero_axis_custom_shape_projection_keeps_source_geometry(self) -> None:
+        for width, height in ((300, 0), (0, 100)):
+            with self.subTest(frame=(width, height)):
+                custom = self._custom_connector(
+                    f'120 180 {width} {height}', f'M 120 180 L {120 + width} {180 + height}',
+                )
+                self.svg_path.write_text(
+                    self.svg_path.read_text(encoding='utf-8').replace(
+                        'data-pptx-object="connector"', 'data-pptx-object="shape"',
+                    ), encoding='utf-8',
+                )
+                authoring_dir = self.root / f'authoring-{width}-{height}'
+                projected = authoring_dir / self.svg_path.name
+                project_svg_batch(
+                    [(self.svg_path, projected)], self.root, authoring_dir,
+                    force=False, projection_kind='layered',
+                )
+                xml, *_ = convert_svg_to_slide_shapes(projected, resource_root=self.root)
+                self.assertIn(custom, xml)
+                slide = ET.fromstring(xml)
+                ext = slide.find('.//p:sp/p:spPr/a:xfrm/a:ext', NS)
+                self.assertEqual(ext.attrib, {'cx': str(width * 9525), 'cy': str(height * 9525)})
+
+    def test_zero_axis_native_rect_and_ellipse_primitives_are_not_omitted(self) -> None:
+        for preset in ('rect', 'ellipse'):
+            for width, height in ((300, 0), (0, 100)):
+                with self.subTest(preset=preset, frame=(width, height)):
+                    geometry = (
+                        f'x="120" y="180" width="{width}" height="{height}"'
+                        if preset == 'rect' else
+                        f'cx="{120 + width / 2}" cy="{180 + height / 2}" '
+                        f'rx="{width / 2}" ry="{height / 2}"'
+                    )
+                    self._svg(
+                        f'<{preset} data-pptx-object="shape" data-pptx-prst="{preset}" '
+                        f'data-pptx-frame="120 180 {width} {height}" {geometry} '
+                        'stroke="#3060C0" fill="none"/>'
+                    )
+                    ext = self._export().find('.//p:sp/p:spPr/a:xfrm/a:ext', NS)
+                    self.assertIsNotNone(ext)
+                    self.assertEqual(ext.attrib, {'cx': str(width * 9525), 'cy': str(height * 9525)})
+
+    def test_stroked_zero_axis_shape_uses_inherited_outline_during_export(self) -> None:
+        self._svg(
+            '<g data-pptx-semantic-object="shape" data-pptx-object="shape" '
+            'data-pptx-prst="rect" data-pptx-frame="120 180 300 0" '
+            'stroke="#3060C0" stroke-width="2">'
+            '<path data-pptx-part="geometry" d="M 120 180 L 420 180" fill="none"/></g>'
+        )
+        group = ET.parse(self.svg_path).getroot()[0]
+        self.assertEqual(validate_preset_geometry_metadata(group), [])
+        ext = self._export().find('.//p:sp/p:spPr/a:xfrm/a:ext', NS)
+        self.assertEqual(ext.attrib, {'cx': str(300 * 9525), 'cy': '0'})
+
+    def test_zero_axis_native_shape_requires_a_visible_stroke(self) -> None:
+        for paint in (
+            '', 'stroke="none"', 'stroke="transparent"',
+            'stroke="#3060C0" stroke-width="0"',
+            'stroke="#3060C0" stroke-opacity="0"',
+            'stroke="#3060C0" opacity="0"',
+            'stroke="#3060C000"',
+        ):
+            with self.subTest(paint=paint):
+                self._svg(
+                    '<g data-pptx-semantic-object="shape" data-pptx-object="shape" '
+                    'data-pptx-prst="rect" data-pptx-frame="120 180 300 0">'
+                    '<path data-pptx-part="geometry" d="M 120 180 L 420 180" '
+                    f'{paint} fill="none"/></g>'
+                )
+                group = ET.parse(self.svg_path).getroot()[0]
+                self.assertTrue(validate_preset_geometry_metadata(group))
+                with self.assertRaisesRegex(SvgNativeConversionError, 'must be positive'):
+                    self._export()
+
+    def test_zero_axis_shape_exception_keeps_invalid_frames_and_text_strict(self) -> None:
+        for frame, tag in (
+            ('120 180 0 0', 'path'), ('120 180 -1 100', 'path'),
+            ('120 180 300 -1', 'path'), ('120 180 300 0', 'text'),
+        ):
+            with self.subTest(frame=frame, tag=tag):
+                element = ET.fromstring(
+                    f'<{tag} data-pptx-object="shape" data-pptx-prst="rect" '
+                    f'data-pptx-frame="{frame}" stroke="#3060C0"/>'
+                )
+                self.assertTrue(validate_preset_geometry_metadata(element))
+
+    def test_zero_axis_shape_reference_stroke_does_not_prove_visible_outline(self) -> None:
+        for definitions in (
+            '',
+            '<defs><linearGradient id="g"><stop offset="0" stop-color="#3060C0" '
+            'stop-opacity="0"/><stop offset="1" stop-color="#000000" '
+            'stop-opacity="0"/></linearGradient></defs>',
+        ):
+            with self.subTest(definitions=bool(definitions)):
+                group = ET.fromstring(
+                    '<g data-pptx-object="shape" data-pptx-prst="rect" '
+                    'data-pptx-frame="120 180 300 0">'
+                    f'{definitions}<path d="M 120 180 L 420 180" '
+                    'stroke="url(#g)" stroke-width="2" fill="none"/></g>'
+                )
+                self.assertTrue(validate_preset_geometry_metadata(group))
 
     @staticmethod
     def _shape_colors(slide: ET.Element) -> list[str]:

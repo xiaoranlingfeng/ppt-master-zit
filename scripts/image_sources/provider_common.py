@@ -386,6 +386,19 @@ def _normalize_match_text(text: str) -> str:
     return _MATCH_SEPARATOR_RE.sub(" ", lowered).strip()
 
 
+def _contains_term(term: str, text: str) -> bool:
+    """Match one normalized term: whole words for Latin, spacing-free for CJK.
+
+    "iran" must not pass on "tirana"; "liberation monument" still matches a
+    run-together "liberationmonument" slug, and CJK ignores inserted spaces.
+    """
+    compact_term = term.replace(" ", "")
+    if term.isascii():
+        forms = "|".join(re.escape(form) for form in {term, compact_term})
+        return re.search(rf"(?<![a-z0-9])(?:{forms})(?![a-z0-9])", text) is not None
+    return term in text or compact_term in text.replace(" ", "")
+
+
 def _term_group_alternatives(term_group: str) -> list[str]:
     """Split one required term group into alternatives.
 
@@ -414,16 +427,12 @@ def missing_required_terms(
         return []
 
     text = _normalize_match_text(_candidate_text(candidate))
-    compact_text = text.replace(" ", "")
     missing: list[str] = []
     for group in required_terms:
         alternatives = _term_group_alternatives(group)
         if not alternatives:
             continue
-        matched = any(
-            alt in text or alt.replace(" ", "") in compact_text
-            for alt in alternatives
-        )
+        matched = any(_contains_term(alt, text) for alt in alternatives)
         if not matched:
             missing.append(str(group))
     return missing
@@ -445,6 +454,14 @@ def compute_relevance(candidate: AssetCandidate, query: str) -> float:
         return 0.0
     hits = sum(1 for token in tokens if token in candidate_tokens)
     return hits / len(tokens)
+
+
+# Whole words only: a bare substring test penalized "business", "trail", and
+# "网站", and the text includes author names and source URLs.
+_INFRA_TERMS_RE = re.compile(
+    r"(?<![a-z])(?:stations?|subways?|metro|rail(?:way|road)?s?|transit"
+    r"|airports?|bus(?:es)?)(?![a-z])|地铁|车站|轨道"
+)
 
 
 def score_candidate(candidate: AssetCandidate, request: ImageSearchRequest) -> float:
@@ -472,27 +489,17 @@ def score_candidate(candidate: AssetCandidate, request: ImageSearchRequest) -> f
 
     score = relevance * 10000.0
     title_text = _normalize_match_text(candidate.title)
-    compact_title = title_text.replace(" ", "")
     for group in request.required_terms or ():
         alternatives = _term_group_alternatives(group)
-        if any(
-            alt in title_text or alt.replace(" ", "") in compact_title
-            for alt in alternatives
-        ):
+        if any(_contains_term(alt, title_text) for alt in alternatives):
             score += 1500.0
 
     # Penalize infrastructure/transit metadata if the user didn't explicitly ask for it.
     # This prevents high-res subway station photos from outranking actual tourist landmarks.
     text = _candidate_text(candidate)
     query_lower = request.query.lower()
-    infra_terms = [
-        "station", "subway", "metro", "rail", "transit", "airport", "bus",
-        "地铁", "站", "轨道",
-    ]
-
-    if not any(t in query_lower for t in infra_terms):
-        if any(t in text for t in infra_terms):
-            score -= 5000.0
+    if not _INFRA_TERMS_RE.search(query_lower) and _INFRA_TERMS_RE.search(text):
+        score -= 5000.0
 
     candidate_orientation = normalize_orientation(candidate.width, candidate.height)
     requested = (request.orientation or "").strip().lower()

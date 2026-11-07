@@ -45,7 +45,7 @@ from pptx_workspace import (
     AUTHORING_SVG_FLAT_DIR,
     ROUNDTRIP_MANIFEST_PATH,
 )
-from slide_roster import discover_slide_svgs
+from slide_roster import discover_slide_svgs, sort_slide_paths
 from tts_backends import (
     backend_cosyvoice,
     backend_edge,
@@ -93,11 +93,15 @@ def _load_tts_env_file() -> None:
     ))
 
 
+# A Markdown heading needs a space after the hashes; "#1 revenue grew" is speech.
+_ATX_HEADING_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
+
+
 def spoken_text(markdown: str) -> str:
     """Return narration text exactly from notes, except Markdown headings."""
     lines: list[str] = []
     for raw in markdown.splitlines():
-        if raw.lstrip().startswith("#"):
+        if _ATX_HEADING_RE.match(raw):
             continue
         line = raw.rstrip()
         if not line.strip():
@@ -151,7 +155,7 @@ def _expected_note_roster(project: Path) -> list[NoteRosterEntry]:
     svg_files = discover_slide_svgs(project / "svg_output")
     if svg_files:
         aliases: dict[int, list[Path]] = {}
-        for path in sorted(notes_dir.glob("*.md")):
+        for path in sort_slide_paths(notes_dir.glob("*.md")):
             match = re.search(r"slide[_]?(\d+)", path.stem)
             if match:
                 aliases.setdefault(int(match.group(1)), []).append(path)
@@ -255,7 +259,7 @@ def _expected_note_roster(project: Path) -> list[NoteRosterEntry]:
             note_path=path,
             output_stem=path.stem,
         )
-        for path in sorted(notes_dir.glob("*.md"))
+        for path in sort_slide_paths(notes_dir.glob("*.md"))
         if path.name != "total.md"
     ]
 

@@ -35,7 +35,9 @@ from image_backends.backend_common import (
     http_error,
     is_permanent_error,
     is_rate_limit_error,
+    nearest_aspect_ratio,
     normalize_image_size,
+    note_aspect_ratio,
     require_api_key,
     resolve_output_path,
     retry_delay,
@@ -145,6 +147,9 @@ def generate(prompt: str,
              output_dir: str = None, filename: str = None,
              model: str = None, max_retries: int = MAX_RETRIES) -> str:
     """Generate an image with retries using the fal.ai backend."""
+    requested_ratio = aspect_ratio
+    aspect_ratio = nearest_aspect_ratio(aspect_ratio, VALID_ASPECT_RATIOS)
+    note_aspect_ratio(requested_ratio, aspect_ratio)
     resolved_model = model or os.environ.get("FAL_MODEL") or DEFAULT_MODEL
     _resolve_request_options(aspect_ratio, image_size, resolved_model)
     api_key = require_api_key(
@@ -174,9 +179,9 @@ def generate(prompt: str,
             if attempt >= max_retries:
                 break
             limited = is_rate_limit_error(exc)
-            delay = retry_delay(attempt, rate_limited=limited)
+            delay = retry_delay(attempt, rate_limited=limited, exc=last_error)
             label = "Rate limit hit" if limited else f"Error: {exc}"
             print(f"\n  [WARN] {label}. Retrying in {delay}s...")
             time.sleep(delay)
 
-    raise RuntimeError(f"Failed after {max_retries + 1} attempts. Last error: {last_error}")
+    raise RuntimeError(f"Failed after {max_retries + 1} attempts. Last error: {last_error}") from last_error

@@ -10,7 +10,6 @@
         en: {
             page_title: "PPT Master - Live Preview",
             panel_slides: "Slides",
-            panel_annotations: "Annotations",
             panel_edit_annotate: "Edit / Annotate",
             placeholder_select_slide: "Select a slide on the left to begin",
             label_selected_element: "Selected element",
@@ -71,7 +70,12 @@
             modal_success_direct_only: "Changes saved to svg_output.\n\nDirect edits are now in the SVG source. Return to the chat and ask to re-export when you want a refreshed PPTX. The preview service is still running.",
             modal_success_annotations_only: "Annotations saved to svg_output.\n\nReturn to the chat and ask to apply annotations when you want AI to interpret them. The preview service is still running.",
             modal_success_mixed: "Direct edits and annotations saved to svg_output.\n\nReturn to the chat to apply AI-needed annotations, then re-export the PPTX when ready. The preview service is still running.",
-            modal_confirm_exit: "Exit preview and stop the local server?\n\nUnapplied edits and annotations will be discarded.",
+            modal_confirm_exit: "Exit preview and stop the local server?\n\nUnapplied edits and annotations are kept as a draft and restored the next time the preview opens.",
+            modal_nothing_applied: "The server had no pending changes, so nothing was written. It may have restarted since these changes were made; re-check the edits and annotations on each slide.",
+            warn_draft_unsaved: "Could not save the draft to disk. This change is staged in memory only and is lost if the server stops before Apply changes.",
+            notice_draft_restored: "Restored the unapplied draft for {count} slide(s): {pages}. Click Apply changes when ready.",
+            warn_draft_conflict: "{pages} changed on disk after the draft was saved, so that draft was not restored. It is kept in live_preview/{file}.",
+            warn_draft_unreadable: "The draft file could not be read. It is kept as live_preview/{file}.",
             modal_success_exit: "Preview stopped.\n\nYou can close this tab and return to the chat.",
             modal_stopping: "Stopping preview server...",
             lang_toggle_title: "Switch language",
@@ -85,68 +89,72 @@
         ja: {
             page_title: "PPT Master - ライブプレビュー",
             panel_slides: "スライド",
-            panel_annotations: "注釈",
-            panel_edit_annotate: "編集 / 注釈",
-            placeholder_select_slide: "左のスライドを選択して開始",
+            panel_edit_annotate: "編集 / コメント",
+            placeholder_select_slide: "左のスライドを選択してください",
             label_selected_element: "選択中の要素",
-            empty_selected_element: "スライド上の要素をクリックして選択",
+            empty_selected_element: "スライド上の要素をクリックすると選択できます",
             btn_select_group: "親グループを選択",
             label_batch_edit: "一括編集",
             label_group_edit: "グループ編集",
             section_geometry: "位置・サイズ",
             section_style: "スタイル",
             section_text_style: "テキスト",
-            section_raw_attrs: "生の属性",
+            section_raw_attrs: "SVG属性",
             label_edit_instruction: "編集指示",
             pending_none: "未適用の変更はありません",
-            pending_summary: "直接編集{edits}件、AI注釈のあるページ{annotations}件が未適用",
-            pending_pages: "対象ページ：{pages}",
+            pending_summary: "直接編集{edits}件、コメントを変更したスライド{annotations}件が未適用",
+            pending_pages: "対象スライド：{pages}",
             quick_align: "整列 / 移動",
             quick_resize: "サイズ変更",
-            quick_replace_image: "画像を差し替え",
-            quick_copy: "文言を修正",
-            quick_relayout: "この領域を再レイアウト",
-            placeholder_annotation: "この要素をAIにどう修正してほしいか記述…",
-            placeholder_annotation_multi: "選択した{count}個の要素をどう修正するか記述…",
-            btn_add_annotation: "注釈を追加",
-            label_annotations_on_slide: "このスライドの注釈",
+            quick_replace_image: "画像の差し替え",
+            quick_copy: "文言の修正",
+            quick_relayout: "領域のレイアウト変更",
+            placeholder_annotation: "この要素をAIにどう修正してほしいかを入力…",
+            placeholder_annotation_multi: "選択した{count}個の要素すべてをどう修正するかを入力…",
+            btn_add_annotation: "コメントを追加",
+            label_annotations_on_slide: "このスライドのコメント",
             btn_submit_annotations: "変更を適用",
             btn_exit_preview: "プレビューを終了",
-            modal_submit: "送信",
+            modal_submit: "適用",
             modal_cancel: "キャンセル",
             empty_waiting_slides: "スライドの生成を待っています…",
             empty_no_slides: "スライドが見つかりません",
-            placeholder_live_ready: "ライブプレビュー準備完了。生成されたスライドがここに表示されます。",
+            placeholder_live_ready: "ライブプレビューの準備ができました。生成されたスライドがここに表示されます。",
             placeholder_slide_writing: "スライドはまだ書き込み中です。次の更新を待っています…",
-            empty_annotations: "注釈はまだありません",
-            tooltip_remove_annotation: "注釈を削除",
+            empty_annotations: "コメントはまだありません",
+            tooltip_remove_annotation: "コメントを削除",
             multi_selected: "{count}個の要素を選択中",
             multi_mixed: "混在",
-            err_load_slides: "スライド一覧の読み込みに失敗: ",
-            err_load_slide: "スライドの読み込みに失敗: ",
-            err_add_annotation: "注釈の追加に失敗: ",
-            err_remove_annotation: "注釈の削除に失敗: ",
-            err_save: "保存に失敗: ",
-            err_edit: "編集に失敗: ",
+            err_load_slides: "スライド一覧の読み込みに失敗しました：",
+            err_load_slide: "スライドの読み込みに失敗しました：",
+            err_add_annotation: "コメントの追加に失敗しました：",
+            err_remove_annotation: "コメントの削除に失敗しました：",
+            err_save: "保存に失敗しました：",
+            err_edit: "編集に失敗しました：",
             label_direct_edit: "オブジェクト属性（「変更を適用」までは保留）",
             prop_multiline_hint: "複数行テキストです — 文字を編集するには1行（tspan）を選択してください",
-            edit_saved_hint: "変更を一時保存しました。「変更を適用」で svg_output に書き込まれます。",
+            edit_saved_hint: "変更は未適用です。「変更を適用」をクリックすると svg_output に書き込まれます。",
             btn_undo: "元に戻す",
-            undo_done: "直前の一時保存済み編集を取り消しました",
-            undo_empty: "取り消せる編集はありません",
+            undo_done: "直前の未適用の編集を元に戻しました",
+            undo_empty: "元に戻せる編集はありません",
             overlap_caption: "要素が重なっています — 1つ選択してください",
             err_empty_svg: "スライドは読み込めましたがキャンバスが空です。SVGが不正か、ルート<svg>要素がない可能性があります。",
-            warn_icon_inline: "{count}個のアイコンを描画できませんでした: {names}",
-            warn_matrix_transform: "このジオメトリ編集は transform matrix として保存されます。プレビューは正確ですが、PPTX出力にはmatrix対応の現行エクスポーターが必要です。",
-            modal_matrix_transform_note: "\n\n注意：一時保存済みのジオメトリ編集に transform matrix を使うものがあります。matrixが反映されるよう、現行のPPTXエクスポーターで再エクスポートしてください。",
-            slide_error_tooltip: "このスライドの解析に失敗: ",
-            reload_banner: "このスライドはディスク上で更新されました。クリックで再読み込み。",
-            modal_confirm_submit: "一時保存済みの直接編集とAI注釈をディスクに書き込みますか？\n\nプレビューサービスは動き続けます。止めたいときは「プレビューを終了」を押してください。",
-            modal_success_submit: "変更を svg_output に保存しました。\n\nプレビューサービスは引き続き動作中です。",
-            modal_success_direct_only: "変更を svg_output に保存しました。\n\n直接編集はSVGソースに反映済みです。PPTXを更新したいときは、チャットに戻って再エクスポートを依頼してください。プレビューサービスは引き続き動作中です。",
-            modal_success_annotations_only: "注釈を svg_output に保存しました。\n\nAIに注釈を解釈・反映させたいときは、チャットに戻って注釈の適用を依頼してください。プレビューサービスは引き続き動作中です。",
-            modal_success_mixed: "直接編集と注釈を svg_output に保存しました。\n\nチャットに戻ってAI判断が必要な注釈の適用を先に依頼し、確認できたらPPTXを再エクスポートしてください。プレビューサービスは引き続き動作中です。",
-            modal_confirm_exit: "プレビューを終了してローカルサーバーを停止しますか？\n\n未適用の編集と注釈は破棄されます。",
+            warn_icon_inline: "{count}個のアイコンを描画できませんでした：{names}",
+            warn_matrix_transform: "この位置・サイズの編集は transform matrix として保存されます。プレビューは正確ですが、PPTXへのエクスポートには matrix 対応のエクスポーターが必要です。",
+            modal_matrix_transform_note: "\n\n注意：未適用の位置・サイズの編集のうち、少なくとも1件が transform matrix を使用しています。matrix が反映されるよう、現行のPPTXエクスポーターで再エクスポートしてください。",
+            slide_error_tooltip: "このスライドの解析に失敗しました：",
+            reload_banner: "このスライドはディスク上で更新されました。クリックすると再読み込みします。",
+            modal_confirm_submit: "未適用の直接編集とAI向けコメントをディスクに書き込みますか？\n\nプレビューサーバーは動作を続けます。停止するには「プレビューを終了」をクリックしてください。",
+            modal_success_submit: "変更を svg_output に保存しました。\n\nプレビューサーバーは引き続き動作しています。",
+            modal_success_direct_only: "変更を svg_output に保存しました。\n\n直接編集はSVGソースに反映済みです。PPTXを更新したいときは、チャットに戻って再エクスポートを依頼してください。プレビューサーバーは引き続き動作しています。",
+            modal_success_annotations_only: "コメントを svg_output に保存しました。\n\nAIにコメントを解釈・反映させたいときは、チャットに戻ってコメントの適用を依頼してください。プレビューサーバーは引き続き動作しています。",
+            modal_success_mixed: "直接編集とコメントを svg_output に保存しました。\n\nチャットに戻ってAIの判断が必要なコメントの適用を先に依頼し、確認できたらPPTXを再エクスポートしてください。プレビューサーバーは引き続き動作しています。",
+            modal_confirm_exit: "プレビューを終了してローカルサーバーを停止しますか？\n\n未適用の編集とコメントは下書きとして保持され、次にプレビューを開いたときに復元されます。",
+            modal_nothing_applied: "サーバーに未適用の変更がなかったため、何も書き込まれませんでした。変更後にサーバーが再起動した可能性があります。各スライドの編集とコメントを確認してください。",
+            warn_draft_unsaved: "下書きをディスクに保存できませんでした。この変更はメモリ上にのみあり、「変更を適用」の前にサーバーが停止すると失われます。",
+            notice_draft_restored: "{count} 枚のスライドの未適用の下書きを復元しました：{pages}。準備ができたら「変更を適用」をクリックしてください。",
+            warn_draft_conflict: "{pages} は下書きの保存後にディスク上で変更されたため、その下書きは復元されませんでした。live_preview/{file} に保持されています。",
+            warn_draft_unreadable: "下書きファイルを読み込めませんでした。live_preview/{file} として保持されています。",
             modal_success_exit: "プレビューを停止しました。\n\nこのタブを閉じてチャットに戻れます。",
             modal_stopping: "プレビューサーバーを停止しています…",
             lang_toggle_title: "言語を切り替え",
@@ -160,15 +168,14 @@
         zh: {
             page_title: "PPT Master - 实时预览",
             panel_slides: "幻灯片",
-            panel_annotations: "标注",
             panel_edit_annotate: "编辑 / 标注",
             placeholder_select_slide: "在左侧选择一张幻灯片开始",
             label_selected_element: "已选元素",
             empty_selected_element: "点击幻灯片中的元素进行选择",
-            btn_select_group: "选择父级组",
+            btn_select_group: "选择父级组合",
             label_batch_edit: "批量编辑",
-            label_group_edit: "组编辑",
-            section_geometry: "几何",
+            label_group_edit: "组合编辑",
+            section_geometry: "位置与大小",
             section_style: "样式",
             section_text_style: "文本",
             section_raw_attrs: "原始属性",
@@ -176,7 +183,7 @@
             pending_none: "没有待应用修改",
             pending_summary: "{edits} 条直接修改、{annotations} 个页面有 AI 标注待应用",
             pending_pages: "页面：{pages}",
-            quick_align: "对齐/移动",
+            quick_align: "对齐 / 移动",
             quick_resize: "调整大小",
             quick_replace_image: "换图",
             quick_copy: "改文案",
@@ -191,37 +198,42 @@
             modal_cancel: "取消",
             empty_waiting_slides: "正在等待生成幻灯片……",
             empty_no_slides: "未找到幻灯片",
-            placeholder_live_ready: "实时预览已就绪,生成的幻灯片会在这里出现。",
-            placeholder_slide_writing: "幻灯片仍在写入,等待下次刷新……",
+            placeholder_live_ready: "实时预览已就绪，生成的幻灯片会在这里出现。",
+            placeholder_slide_writing: "幻灯片仍在写入，等待下次刷新……",
             empty_annotations: "暂无标注",
             tooltip_remove_annotation: "删除标注",
             multi_selected: "已选 {count} 个元素",
             multi_mixed: "混合",
-            err_load_slides: "加载幻灯片失败:",
-            err_load_slide: "加载幻灯片失败:",
-            err_add_annotation: "添加标注失败:",
-            err_remove_annotation: "删除标注失败:",
-            err_save: "保存失败:",
-            err_edit: "编辑失败:",
-            label_direct_edit: "对象属性(点击应用修改后写入)",
-            prop_multiline_hint: "多行文本——选中单行(tspan)编辑文字",
+            err_load_slides: "加载幻灯片列表失败：",
+            err_load_slide: "加载幻灯片失败：",
+            err_add_annotation: "添加标注失败：",
+            err_remove_annotation: "删除标注失败：",
+            err_save: "保存失败：",
+            err_edit: "编辑失败：",
+            label_direct_edit: "对象属性（点击“应用修改”后写入）",
+            prop_multiline_hint: "多行文本——选中单行（tspan）后编辑文字",
             edit_saved_hint: "修改已暂存。点击“应用修改”后写入 svg_output。",
             btn_undo: "撤销",
             undo_done: "已撤销上一条暂存修改",
             undo_empty: "没有可撤销的暂存修改",
             overlap_caption: "此处重叠元素——点击选择",
             err_empty_svg: "幻灯片已加载但画布为空。SVG 可能损坏或缺少根 <svg> 元素。",
-            warn_icon_inline: "{count} 个图标渲染失败:{names}",
-            warn_matrix_transform: "本次几何修改会以 transform matrix 保存。预览是准确的；PPTX 导出需要使用支持 matrix 的当前导出器。",
-            modal_matrix_transform_note: "\n\n提示：至少有一条暂存几何修改使用了 transform matrix。请用当前 PPTX 导出器重新导出，确保 matrix 被应用。",
-            slide_error_tooltip: "该幻灯片解析失败:",
-            reload_banner: "当前页已在磁盘上更新,点此重新加载。",
-            modal_confirm_submit: "确认将暂存的直接修改和 AI 标注写入磁盘?\n\n预览服务会继续运行。需要关闭时请点击退出预览。",
+            warn_icon_inline: "{count} 个图标渲染失败：{names}",
+            warn_matrix_transform: "本次位置/大小修改会以 transform matrix 保存。预览是准确的；PPTX 导出需要使用支持 matrix 的当前导出器。",
+            modal_matrix_transform_note: "\n\n提示：至少有一条暂存的位置/大小修改使用了 transform matrix。请用当前 PPTX 导出器重新导出，确保 matrix 被应用。",
+            slide_error_tooltip: "该幻灯片解析失败：",
+            reload_banner: "当前页已在磁盘上更新，点此重新加载。",
+            modal_confirm_submit: "确认将暂存的直接修改和 AI 标注写入磁盘？\n\n预览服务会继续运行。需要关闭时请点击“退出预览”。",
             modal_success_submit: "修改已保存到 svg_output。\n\n预览服务仍在运行。",
             modal_success_direct_only: "修改已保存到 svg_output。\n\n直接修改已经写入 SVG 源文件；需要刷新 PPTX 时，请回到对话窗口要求重新导出。预览服务仍在运行。",
             modal_success_annotations_only: "标注已保存到 svg_output。\n\n需要 AI 理解并执行这些标注时，请回到对话窗口要求应用标注。预览服务仍在运行。",
             modal_success_mixed: "直接修改和标注已保存到 svg_output。\n\n请回到对话窗口先应用需要 AI 判断的标注，确认后再重新导出 PPTX。预览服务仍在运行。",
-            modal_confirm_exit: "退出预览并停止本地服务?\n\n未应用的属性修改和标注将被丢弃。",
+            modal_confirm_exit: "退出预览并停止本地服务？\n\n未应用的修改和标注会保留为草稿，下次打开预览时自动恢复。",
+            modal_nothing_applied: "服务器上没有待应用的修改，本次没有写入任何文件。服务可能在这些修改之后重启过，请逐页检查修改和标注。",
+            warn_draft_unsaved: "草稿未能写入磁盘。这次修改只暂存在内存里，点击“应用修改”前服务停止就会丢失。",
+            notice_draft_restored: "已恢复 {count} 页未应用的草稿：{pages}。确认后点击“应用修改”。",
+            warn_draft_conflict: "{pages} 在草稿保存后已在磁盘上变动，这部分草稿未恢复，已保留在 live_preview/{file}。",
+            warn_draft_unreadable: "草稿文件无法读取，已保留为 live_preview/{file}。",
             modal_success_exit: "预览已停止。\n\n可以关闭本标签页并回到对话窗口。",
             modal_stopping: "正在停止预览服务……",
             lang_toggle_title: "切换语言",
@@ -235,7 +247,6 @@
         "zh-TW": {
             page_title: "PPT Master - 即時預覽",
             panel_slides: "投影片",
-            panel_annotations: "標註",
             panel_edit_annotate: "編輯 / 標註",
             placeholder_select_slide: "在左側選擇一張投影片開始",
             label_selected_element: "已選元素",
@@ -262,7 +273,7 @@
             label_annotations_on_slide: "本頁標註",
             btn_submit_annotations: "套用修改",
             btn_exit_preview: "結束預覽",
-            modal_submit: "提交",
+            modal_submit: "送出",
             modal_cancel: "取消",
             empty_waiting_slides: "正在等待生成投影片……",
             empty_no_slides: "未找到投影片",
@@ -279,24 +290,29 @@
             err_save: "儲存失敗：",
             err_edit: "編輯失敗：",
             label_direct_edit: "物件屬性（點選套用修改後寫入）",
-            prop_multiline_hint: "多行文字——選取單行(tspan)編輯文字",
+            prop_multiline_hint: "多行文字——選取單行（tspan）編輯文字",
             edit_saved_hint: "修改已暫存。點選「套用修改」後寫入 svg_output。",
             btn_undo: "復原",
             undo_done: "已復原上一筆暫存修改",
             undo_empty: "沒有可復原的暫存修改",
             overlap_caption: "此處元素重疊——請點選其中一個",
             err_empty_svg: "投影片已載入但畫布為空。SVG 可能損壞或缺少根 <svg> 元素。",
-            warn_icon_inline: "{count} 個圖示渲染失敗：{names}",
-            warn_matrix_transform: "本次幾何修改會以 transform matrix 儲存。預覽是準確的；PPTX 匯出需要使用支援 matrix 的目前匯出器。",
-            modal_matrix_transform_note: "\n\n提示：至少有一筆暫存幾何修改使用了 transform matrix。請用目前 PPTX 匯出器重新匯出，確保 matrix 被套用。",
+            warn_icon_inline: "{count} 個圖示算繪失敗：{names}",
+            warn_matrix_transform: "本次幾何修改會以 transform matrix 儲存。預覽結果準確；PPTX 匯出則取決於轉換流程是否支援 matrix。",
+            modal_matrix_transform_note: "\n\n提示：至少有一筆暫存幾何修改使用了 transform matrix。請使用目前版本的 PPTX 匯出器重新匯出，以套用 matrix。",
             slide_error_tooltip: "該投影片解析失敗：",
-            reload_banner: "目前頁已在磁碟上更新，點此重新載入。",
+            reload_banner: "這張投影片已在磁碟上更新，點此重新載入。",
             modal_confirm_submit: "確認將暫存的直接修改和 AI 標註寫入磁碟？\n\n預覽服務會繼續執行。需要關閉時請點選結束預覽。",
             modal_success_submit: "修改已儲存到 svg_output。\n\n預覽服務仍在執行。",
-            modal_success_direct_only: "修改已儲存到 svg_output。\n\n直接修改已經寫入 SVG 原始檔；需要重新整理 PPTX 時，請回到對話視窗要求重新匯出。預覽服務仍在執行。",
+            modal_success_direct_only: "修改已儲存到 svg_output。\n\n直接修改已經寫入 SVG 原始檔；需要更新 PPTX 時，請回到對話視窗要求重新匯出。預覽服務仍在執行。",
             modal_success_annotations_only: "標註已儲存到 svg_output。\n\n需要 AI 理解並執行這些標註時，請回到對話視窗要求套用標註。預覽服務仍在執行。",
             modal_success_mixed: "直接修改和標註已儲存到 svg_output。\n\n請回到對話視窗先套用需要 AI 判斷的標註，確認後再重新匯出 PPTX。預覽服務仍在執行。",
-            modal_confirm_exit: "結束預覽並停止本機服務？\n\n未套用的屬性修改和標註將被丟棄。",
+            modal_confirm_exit: "結束預覽並停止本機服務？\n\n未套用的修改和標註會保留為草稿，下次開啟預覽時自動恢復。",
+            modal_nothing_applied: "伺服器上沒有待套用的修改，本次沒有寫入任何檔案。服務可能在這些修改之後重新啟動過，請逐頁檢查修改和標註。",
+            warn_draft_unsaved: "草稿未能寫入磁碟。這次修改只暫存在記憶體中，點選「套用修改」前服務停止就會遺失。",
+            notice_draft_restored: "已恢復 {count} 頁未套用的草稿：{pages}。確認後點選「套用修改」。",
+            warn_draft_conflict: "{pages} 在草稿儲存後已在磁碟上變動，這部分草稿未恢復，已保留在 live_preview/{file}。",
+            warn_draft_unreadable: "草稿檔案無法讀取，已保留為 live_preview/{file}。",
             modal_success_exit: "預覽已停止。\n\n可以關閉本分頁並回到對話視窗。",
             modal_stopping: "正在停止預覽服務……",
             lang_toggle_title: "切換語言",
@@ -518,9 +534,9 @@
         });
     }
 
-    // Staged edits live in server memory until "Apply changes"; the server can
-    // still idle-timeout or be killed and drop them. Warn before the tab leaves
-    // so the user remembers to apply (browsers show their own generic prompt).
+    // Staged edits stay unapplied until "Apply changes" (the server mirrors them
+    // to live_preview/draft.json). Warn before the tab leaves so the user
+    // remembers to apply (browsers show their own generic prompt).
     function hasUnsavedWork() {
         if (annotationsDirty) return true;
         return Object.keys(editStackCount).some(function (k) {
@@ -1662,7 +1678,7 @@
         fetch("/api/slide/" + encodeURIComponent(currentSlide) + "/annotate/" + encodeURIComponent(elementId), {
             method: "DELETE"
         })
-            .then(function (res) { return res.json(); })
+            .then(jsonOrThrow)
             .then(function () {
                 delete slideAnnotations[elementId];
                 markAnnotationChanged(currentSlide);
@@ -1805,7 +1821,11 @@
                 if (data.error) {
                     modalMessage.textContent = t("err_save") + data.error;
                 } else {
-                    if (hadDirectEdits && hadAnnotationChanges) {
+                    var nothingApplied = (hadDirectEdits || hadAnnotationChanges) &&
+                        !(data.files_modified || []).length;
+                    if (nothingApplied) {
+                        modalMessage.textContent = t("modal_nothing_applied");
+                    } else if (hadDirectEdits && hadAnnotationChanges) {
                         modalMessage.textContent = t("modal_success_mixed");
                     } else if (hadDirectEdits) {
                         modalMessage.textContent = t("modal_success_direct_only");
@@ -1959,8 +1979,41 @@
             if (!res.ok || data.error) {
                 throw new Error(data.error || ("Request failed with status " + res.status));
             }
+            if (data.draft_saved === false) showWarning(t("warn_draft_unsaved"));
             return data;
         });
+    }
+
+    // Mirror the server's unapplied state (including a draft restored at
+    // startup) into the pending-state trackers, so Apply changes, the pending
+    // strip and the leave guard see it after a reload or server restart.
+    function applyDraftStatus(draft) {
+        if (!draft) return;
+        var pending = draft.pending || {};
+        Object.keys(pending).forEach(function (name) {
+            if (pending[name].annotations) {
+                annotationEditSlides[name] = true;
+                annotationsDirty = true;
+            }
+            editStackCount[name] = pending[name].edits || 0;
+        });
+        updatePendingStatus();
+        var startup = draft.startup;
+        if (!startup) return;
+        var names = Object.keys(startup.restored || {}).sort();
+        var messages = [];
+        if (names.length) {
+            messages.push(t("notice_draft_restored", { count: names.length, pages: names.join(", ") }));
+        }
+        if (startup.unreadable && startup.conflict_file) {
+            messages.push(t("warn_draft_unreadable", { file: startup.conflict_file }));
+        } else if ((startup.conflicts || []).length && startup.conflict_file) {
+            messages.push(t("warn_draft_conflict", {
+                pages: startup.conflicts.join(", "),
+                file: startup.conflict_file,
+            }));
+        }
+        if (messages.length) showWarning(messages.join(" "));
     }
 
     function loadConfig() {
@@ -1968,6 +2021,7 @@
             .then(function (res) { return res.json(); })
             .then(function (data) {
                 liveMode = !!data.live;
+                applyDraftStatus(data.draft);
             })
             .catch(function () {
                 liveMode = false;

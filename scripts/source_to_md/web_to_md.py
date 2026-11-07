@@ -57,6 +57,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from console_encoding import configure_utf8_stdio  # noqa: E402
+from _batch import unique_output_path  # noqa: E402
 from _dispatcher import (  # noqa: E402
     DOC_SUFFIXES,
     EXCEL_SUFFIXES,
@@ -886,7 +887,7 @@ def find_main_content(soup: BeautifulSoup) -> Tag | None:
         for element in elements:
             if not any(element is existing for existing in candidates):
                 candidates.append(element)
-    for tag in soup(["script", "style", "nav", "noscript", "iframe"]):
+    for tag in soup(["script", "style", "nav", "noscript", "template", "iframe"]):
         tag.decompose()
     for tag in soup(["header", "footer", "aside"]):
         if not any(tag is body or body in tag.parents for body in candidates):
@@ -1261,14 +1262,16 @@ def is_plain_text_document(url: str, body: str) -> bool:
 
     A raw file such as ``.../CHANGELOG.md`` on raw.githubusercontent.com is
     already Markdown; running it through the HTML extractor loses the file or
-    fails on a missing body. The URL suffix decides, guarded by the absence of
-    an HTML document tag near the top of the body.
+    fails on a missing body. The URL suffix decides, unless the body itself
+    opens as an HTML document.
     """
     path = urlparse(url).path.lower()
     if not path.endswith(PLAIN_TEXT_SUFFIXES):
         return False
-    head = body[:4096].lower()
-    return "<html" not in head and "<body" not in head and "<!doctype html" not in head
+    # An HTML page starts as one; a README whose code fence shows "<body>" or
+    # "<html>" further down is still Markdown.
+    start = body[:4096].lstrip("\ufeff \t\r\n").lower()
+    return not start.startswith(("<!doctype html", "<html", "<head", "<body"))
 
 
 def _save_plain_text_document(
@@ -1381,6 +1384,10 @@ def _meta_refresh_target(soup: BeautifulSoup, base_url: str) -> str | None:
     return target if urlparse(target).scheme in {"http", "https"} else None
 
 
+# Auto-named outputs claimed in this run; explicit -o paths are not tracked.
+_AUTO_NAMED_OUTPUTS: set[Path] = set()
+
+
 def process_url(
     url: str,
     output_file: str | None = None,
@@ -1429,8 +1436,14 @@ def process_url(
             output_path = output_file
         else:
             base_name = derive_base_name(metadata['title'], url)
-            filename = f"{base_name}.md"
-            output_path = os.path.join(CONFIG["output_dir"], filename)
+            default_path = os.path.join(CONFIG["output_dir"], f"{base_name}.md")
+            # Two pages titled "Report" in one batch used to share Report.md.
+            output_path = str(unique_output_path(
+                Path(CONFIG["output_dir"]), base_name, _AUTO_NAMED_OUTPUTS,
+            ))
+            if output_path != default_path:
+                print(f"   [INFO] Renamed output for {url}: {default_path} -> {output_path} "
+                      "(title collision)")
 
         output_dirname = os.path.dirname(output_path) or "."
         os.makedirs(output_dirname, exist_ok=True)

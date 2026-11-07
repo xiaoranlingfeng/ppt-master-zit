@@ -98,3 +98,37 @@ class WebContentLossTests(unittest.TestCase):
         self.assertIn('DENSE_BODY', md)
         md = self._convert('<main><article><p>' + 'NESTED_BODY ' * 40 + '</p></article></main>')
         self.assertEqual(md.count('NESTED_BODY'), 40)
+
+
+class PlainTextDetectionTests(unittest.TestCase):
+    URL = "https://raw.githubusercontent.com/example/repo/main/README.md"
+
+    def test_markdown_showing_html_in_a_code_fence_stays_markdown(self) -> None:
+        body = "# HTML guide\n\nBefore\n\n```html\n<body>Example</body>\n```\n\nAfter\n"
+        self.assertTrue(web_to_md.is_plain_text_document(self.URL, body))
+
+    def test_html_page_at_a_markdown_url_is_html(self) -> None:
+        self.assertFalse(
+            web_to_md.is_plain_text_document(self.URL, "<!DOCTYPE html><html><body>x</body></html>")
+        )
+
+
+class SameTitleBatchTests(unittest.TestCase):
+    def test_pages_with_the_same_title_get_distinct_outputs(self) -> None:
+        def response(url: str) -> SimpleNamespace:
+            paragraph = f"BODY-{url[-1]} " + "long paragraph text " * 30
+            html = (f"<html><head><title>Report</title></head><body><article>"
+                    f"<h1>Report</h1><p>{paragraph}</p></article></body></html>")
+            return SimpleNamespace(url=url, headers={"Content-Type": "text/html; charset=utf-8"},
+                                   content=html.encode(), status_code=200)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(web_to_md, "fetch_response", side_effect=response), \
+                redirect_stdout(io.StringIO()):
+            code = web_to_md.main(["https://example.com/A", "https://example.com/B",
+                                   "--no-images", "-d", tmp])
+            first = (Path(tmp) / "Report.md").read_text(encoding="utf-8")
+            second = (Path(tmp) / "Report_2.md").read_text(encoding="utf-8")
+        self.assertEqual(code, 0)
+        self.assertIn("BODY-A", first)
+        self.assertIn("BODY-B", second)
