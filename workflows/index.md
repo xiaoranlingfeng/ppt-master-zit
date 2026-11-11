@@ -36,6 +36,7 @@ Maintainer-only inventory for adding, moving, or removing workflow documents. Ru
 | `customize-animations` | Post-processing stage | [`stages/customize-animations.md`](./stages/customize-animations.md) | Generate conditional export |
 | `generate-audio` | Shared audio stage | [`stages/generate-audio.md`](./stages/generate-audio.md) | Generate / Edit Native |
 | `failure-recovery` | Governance | [`governance/failure-recovery.md`](./governance/failure-recovery.md) | All routes |
+| `interview-gate` | Decision gate (fork) | [`interview-gate.md`](./interview-gate.md) | Generate PPTX ordinary Default (D0–D3 before Stage 1, D5–D9 before Stage 2, D4 per page before authoring) and Edit Native (D4/D7/D8 before its §4.3 plan); skipped by explicit Quick, delegated intent, Image to PPTX and Beautify-Quick |
 
 ## 3. Maintenance Rules
 

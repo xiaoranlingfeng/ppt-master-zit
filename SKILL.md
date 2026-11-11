@@ -10,6 +10,10 @@ description: >
   Use when the user explicitly asks for ppt-master-comfyui / comfyui 版 or the
   former names ppt-master-qwen-image-2-1, ppt-master-zit / qwen 版 / zit 版,
   or wants decks whose images come from the local ComfyUI queue.
+  Ordinary Default and Edit Native runs also carry a per-decision interview gate
+  (grill-me 式, D0–D9) before their existing confirmations — use it when the
+  user says 「grill me」「逐项确认」「别替我决定」or wants to decide every
+  outline, page and transition personally.
 metadata:
   version: "6.8.0"  # base: official ppt-master v6.8.0 · fork build: v6.8.0-comfyui.1
   copyright: "Copyright (c) 2025-2026 Hugo He"
