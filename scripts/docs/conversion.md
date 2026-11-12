@@ -1,0 +1,764 @@
+# Conversion Tools
+
+> **Design boundary**: use native-Python converters for supported formats,
+> invoke Pandoc only for explicit fallback formats, and let web conversion use
+> `curl_cffi` when available for sites that reject Python's default TLS
+> fingerprint.
+
+Source conversion tools turn PDFs, documents, slide decks, and web pages into Markdown before project creation.
+
+Default workflow entry: use `source_to_md.py` unless a backend-specific
+diagnostic or forced route is needed.
+
+## Shared Output Contract
+
+All `source_to_md` backends preserve their Markdown output and attempt a
+sidecar profile after conversion. Direct calls treat the sidecar as
+best-effort: an I/O failure warns without changing the Markdown result. The
+unified `source_to_md.py` dispatcher writes a missing profile before success.
+
+| Output | Convention |
+|---|---|
+| Markdown | `<stem>.md` beside the local source unless `-o` selects another path |
+| Asset directory | `<stem>_files/` when the backend extracts images or media |
+| Image manifest | `<stem>_files/image_manifest.json` when image metadata is available |
+| Conversion profile | `<stem>.conversion_profile.json` beside the Markdown output when written |
+
+For multi-file or directory inputs, the unified entry and direct PDF, document,
+Excel, and PowerPoint backends allocate distinct Markdown paths within the run.
+Without `-o`, each output stays in its source's directory; with `-o`, outputs
+share that directory. Collisions with inputs or other planned outputs gain
+`_2`, `_3`, etc., reported as `[INFO] Renamed output ...` on stderr. Assets and
+profiles follow the chosen Markdown stem. Separate runs retain the existing
+overwrite behavior for unrelated outputs.
+
+When present, the conversion profile is metadata only: converter, source path,
+Markdown structure counts, asset directory, image manifest path, and image
+count. Downstream PPT workflows still use Markdown and the image manifest as
+the content/asset contract; the profile is for inspection and debugging.
+
+## `source_to_md.py`
+
+Unified dispatcher for ad hoc explicit-source conversion. It auto-detects each
+listed input file or URL and calls the existing backend converter, so backend
+behavior remains the source of truth.
+
+Routing is centralized in `source_to_md/_dispatcher.py` and reused by
+`project_manager.py import-sources`; do not add a second type-to-backend table.
+
+```bash
+python3 scripts/source_to_md.py paper.pdf
+python3 scripts/source_to_md.py paper.pdf report.docx deck.pptx
+python3 scripts/source_to_md.py ./sources
+python3 scripts/source_to_md.py ./pdfs/*.pdf
+python3 scripts/source_to_md.py ./decks/*.pptx
+python3 scripts/source_to_md.py report.docx -o report.md
+python3 scripts/source_to_md.py ./sources -o ./markdown  # explicit separate output directory
+python3 scripts/source_to_md.py workbook.xlsx --json
+python3 scripts/source_to_md.py deck.pptx
+python3 scripts/source_to_md.py https://example.com/article -o article.md
+```
+
+Useful options:
+- `-t pdf|doc|excel|pptx|web|markdown|text` forces a route when extension
+  detection is not enough.
+- `--json` prints a compact machine-readable result after success when the
+  output path is known. With multiple inputs, each successful conversion prints
+  its own JSON line after that source finishes.
+- At the unified `source_to_md.py` entry, `--images all|filtered|none`,
+  `--no-images`, and `--filter-images` map to the PDF image mode.
+  `--no-images` (or `--images none`) also applies to web pages (images stay
+  remote links, no `<stem>_files/`) and is a no-op on Markdown/text.
+- A URL that serves a PDF / Office document (by Content-Type, body magic, or
+  suffix) is saved beside the Markdown and converted by that document's
+  backend; a `.md` / `.txt` URL whose body is not HTML is saved verbatim
+  under a `Source:` header, named by the URL stem.
+- Unknown backend-specific flags are passed through to each selected converter.
+- `-o/--output` selects one Markdown file for one input, or an output directory
+  for multiple inputs / directory inputs.
+  A path that names an existing directory, or ends in `/`, is always treated as
+  a directory, even for a single input: the file keeps its default `<stem>.md`
+  name inside it; an extension-less `-o` for one input gains `.md`.
+  Local batch outputs are planned together; input/output collisions gain `_2`,
+  `_3`, etc. suffixes and are reported on stderr. A single-input file `-o`
+  refuses an existing file except its own Markdown/text passthrough.
+
+For multi-source project intake, use `project_manager.py import-sources` with
+all source paths / URLs. Same-stem convertible sources receive distinct
+archive names such as `budget_2.xlsm`, so their Markdown, profiles, assets, and
+PPTX intake artifacts stay separate. Pre-existing Markdown and explicitly
+supplied same-stem Markdown still suppress automatic conversion; PPTX intake
+remains separate for each archived deck. See
+[`project.md`](project.md). For standalone local conversion, the default is to
+keep generated Markdown and profiles beside the original source.
+`source_to_md.py` and the backend converters support single files, explicit
+multi-file inputs, and non-recursive directory inputs.
+
+## `source_to_md/pdf_to_md.py`
+
+Recommended first choice for native PDFs.
+
+```bash
+python3 scripts/source_to_md/pdf_to_md.py book.pdf
+python3 scripts/source_to_md/pdf_to_md.py book.pdf -o output.md
+python3 scripts/source_to_md/pdf_to_md.py book.pdf appendix.pdf
+python3 scripts/source_to_md/pdf_to_md.py ./pdfs
+python3 scripts/source_to_md/pdf_to_md.py ./pdfs -o ./markdown  # explicit separate output directory
+
+# Image extraction control (default: filtered)
+python3 scripts/source_to_md/pdf_to_md.py book.pdf --images filtered  # size/quality filters applied
+python3 scripts/source_to_md/pdf_to_md.py book.pdf --images all       # extract all images, no filtering
+python3 scripts/source_to_md/pdf_to_md.py book.pdf --images none      # skip all images (text only)
+```
+
+Use cases:
+- Native PDFs exported from Word, PowerPoint, LaTeX, or similar tools
+- Privacy-sensitive documents that should stay local
+- Fast first-pass extraction before falling back to OCR-heavy tools
+
+Prefer MinerU or another OCR/layout tool when:
+- The PDF is scanned or image-based
+- Multi-column layout parsing is poor
+- Encoding is garbled
+
+Dependency:
+
+```bash
+pip install PyMuPDF
+```
+
+PyMuPDF is licensed under AGPL-3.0, with a commercial license available from Artifex. It is the only AGPL dependency in this repository and is imported only by this converter, so it can be left uninstalled when no PDF sources are involved. Anyone redistributing PPT Master together with its installed dependencies should review the AGPL terms first.
+
+## `source_to_md/doc_to_md.py`
+
+Hybrid converter: pure-Python for the common formats, pandoc fallback for the rest.
+
+Native path (no external binary required):
+- `.docx` — via `mammoth`; text-only tables (with footnotes) and chart data become pipe Markdown, and OMML / Office Math equations (Word-native or MathType "Convert to Office Math") are rewritten to inline LaTeX, including footnote and endnote math. Classic MathType OLE objects carry no OMML and are kept only as their preview image. Simple fields (`w:fldSimple`, e.g. caption numbers) keep their displayed result, and directly hidden runs (`w:vanish`) are omitted with a warning, matching what Word displays.
+- `.html` / `.htm` — via `markdownify` + `beautifulsoup4`
+- `.epub` — via `ebooklib` + `markdownify`; keep spine order, then append
+  supplemental document items (not the EPUB 3 navigation document) with a
+  warning. Resolve images relative to each
+  chapter before basename fallbacks, so equal filenames in different chapter
+  directories keep their own images. Non-rendered script/style/template content
+  is omitted with a warning; interactive `hidden` / `display:none` text is kept.
+- `.ipynb` — via `nbconvert`; code-cell output images and Markdown attachments
+  use `<output-stem>_files/` with relative Markdown references
+
+Pandoc fallback (only if you need these):
+- `.doc`, `.odt`, `.rtf`, `.tex`/`.latex`, `.rst`, `.org`, `.typ`
+- `.odt` uses a temporary copy to expose table header rows, flatten text-box
+  paragraphs while retaining inline links, and resolve conditional text from
+  its stored `text:is-hidden` state. Diagnostics report these normalizations
+  and excluded author-hidden fields; text-box geometry remains in the source.
+- `.rtf` normalizes flat field instruction/result containers in a temporary
+  copy so Pandoc retains their displayed text and links. Author-hidden text is
+  omitted with a warning. Both preparations leave source files unchanged.
+- `.doc` still requires a Pandoc build with a `doc` reader; a build without
+  that reader reports an explicit conversion failure, not an empty success.
+- `.typ` evaluates under pandoc, so a real project file that imports its template,
+  a package, or a custom function fails there; it then (or without pandoc) keeps the
+  source text with `=` headings mapped to Markdown and raw blocks, markup, math, and
+  code calls verbatim, recorded as a conversion-profile warning.
+
+```bash
+python3 scripts/source_to_md/doc_to_md.py lecture.docx
+python3 scripts/source_to_md/doc_to_md.py lecture.docx -o output.md
+python3 scripts/source_to_md/doc_to_md.py lecture.docx notes.html
+python3 scripts/source_to_md/doc_to_md.py ./docs
+python3 scripts/source_to_md/doc_to_md.py ./docs -o ./markdown  # explicit separate output directory
+python3 scripts/source_to_md/doc_to_md.py notes.epub
+python3 scripts/source_to_md/doc_to_md.py paper.tex -o paper.md  # uses pandoc
+```
+
+Dependencies:
+
+```bash
+# Native path — always required
+pip install mammoth markdownify ebooklib nbconvert beautifulsoup4
+
+# Fallback path — only for .doc/.odt/.rtf/.tex/.rst/.org/.typ
+# macOS:   brew install pandoc
+# Ubuntu:  sudo apt install pandoc
+# Windows: https://pandoc.org/installing.html
+```
+
+By default, each input produces `<input-stem>.md`, subject to batch collision
+renaming. Extracted assets use a sibling `<output-stem>_files/`
+directory with relative references. Without assets, that directory need not remain.
+The direct backend then attempts `<output-stem>.conversion_profile.json` under the
+shared best-effort sidecar contract.
+
+## `source_to_md/excel_to_md.py`
+
+Excel workbook converter for presentation source intake.
+
+Supported formats:
+- `.xlsx`
+- `.xlsm`
+
+Unsupported by default:
+- `.xls` — resave as `.xlsx` first
+
+```bash
+python3 scripts/source_to_md/excel_to_md.py report.xlsx
+python3 scripts/source_to_md/excel_to_md.py report.xlsx -o output.md
+python3 scripts/source_to_md/excel_to_md.py report.xlsx budget.xlsm
+python3 scripts/source_to_md/excel_to_md.py ./workbooks
+python3 scripts/source_to_md/excel_to_md.py ./workbooks -o ./markdown  # explicit separate output directory
+python3 scripts/source_to_md/excel_to_md.py report.xlsm --max-rows 200 --max-cols 40
+python3 scripts/source_to_md/excel_to_md.py report.xlsx --include-hidden  # also export hidden sheets
+```
+
+Behavior:
+- preserves workbook and sheet structure in Markdown
+- exports visible sheets by default; skipped hidden sheets are named in a warning, and `--include-hidden` exports them with a `(hidden)` heading
+- trims empty outer rows and columns
+- propagates merged-cell values for readable Markdown tables; merged numeric regions are noted below the table (`> Merged cells: A2:A3 (shared value)`) so a shared amount is not counted twice
+- shows percent formats as percentages and keeps leading zeros of zero-padded identifiers; other number formats keep the stored value at Excel's 15-digit precision
+- exports formula cells as cached values; it does not recalculate formulas
+- uses the shared best-effort conversion-profile contract after success
+
+Dependency:
+
+```bash
+pip install openpyxl
+```
+
+CSV/TSV files are already plain-text table sources and do not require this converter.
+
+## `source_to_md/ppt_to_md.py`
+
+Structured PowerPoint-to-Markdown converter for Open XML slide decks.
+
+Supported formats include:
+- `.pptx`, `.pptm`
+- `.ppsx`, `.ppsm`
+- `.potx`, `.potm`
+
+```bash
+python3 scripts/source_to_md/ppt_to_md.py sales_deck.pptx
+python3 scripts/source_to_md/ppt_to_md.py sales_deck.pptx -o output.md
+python3 scripts/source_to_md/ppt_to_md.py sales_deck.pptx appendix.pptx
+python3 scripts/source_to_md/ppt_to_md.py ./decks
+python3 scripts/source_to_md/ppt_to_md.py ./decks -o ./markdown  # explicit separate output directory
+python3 scripts/source_to_md/ppt_to_md.py template.ppsx -o notes/template.md
+```
+
+Behavior:
+- extracts slide text in reading order
+- excludes author-hidden shapes and groups (`cNvPr/@hidden`) with warnings; their text, pictures, tables, charts, and SmartArt descendants do not enter Markdown or the Beautify intake inventory
+- rewrites Office Math equations (`a14:m` OMML) as `$...$` inline or `$$...$$` display LaTeX, using the same converter as `.docx`
+- uses a chart's own visible title in its `> [Chart]` header, and a picture's alt text (`descr`) as its Markdown alt text
+- reads the `mc:Fallback` of other shape-tree `mc:AlternateContent` it cannot interpret (3D models, ink, zoom), so their preview pictures and text are kept; ChartEx stays reported as unsupported
+- converts PowerPoint tables to Markdown tables; cell-internal line breaks become `<br>` so they cannot break the pipe-table row structure
+- transcribes category charts as category × series tables and scatter/bubble charts as typed X/Y[/size] point tables
+- preserves every readable chart dimension or series and emits `[Chart data warning: <reason>]` for missing caches/count mismatches; `[Chart data unavailable: <reason>]` is reserved for charts with no readable points (and unsupported ChartEx), so XY data is never flattened into a misleading category table
+- transcribes SmartArt semantic nodes as hierarchical Markdown; unreadable diagram data emits an explicit placeholder and conversion warning
+- exports embedded pictures to a sibling `_files/` directory
+- preserves supported run, table-cell, picture, and text-shape links as Markdown links, including `#slide-N` jumps
+- appends speaker notes when present
+- uses the shared best-effort conversion-profile contract after success
+
+Dependency:
+
+```bash
+pip install python-pptx
+```
+
+Legacy `.ppt` is not parsed directly. Resave it as `.pptx` or export it to PDF first.
+
+## `pptx_intake.py`
+
+Standard enrichment layer for PPTX sources. It complements `ppt_to_md.py` rather
+than replacing it: Markdown remains the normalized content source, while intake
+artifacts provide source facts for Strategist and standalone PPTX workflows.
+
+```bash
+python3 scripts/pptx_intake.py deck.pptx -o projects/demo/analysis
+```
+
+Outputs (per source deck, prefixed by file stem):
+- `<stem>.identity.json` — canvas size/aspect, theme palette/fonts, observed colors/fonts
+- `<stem>.slide_library.json` — text slots, geometry, native tables, native chart titles/display caches, and SmartArt nodes/connections. Chart titles include rich text and linked-string caches; Beautify carries them into its frozen inventory and verifies their presence in the exported deck.
+- `source_profile.json` — the single multi-deck index: a compact Strategist-facing digest per deck (over identity, tables, charts, SmartArt, and page types) under `decks[]`, with prefixed artifact pointers
+
+`project_manager.py import-sources` runs this automatically for PPTX/PPTM/PPSX/PPSM/POTX/POTM inputs and stores the bundle directly under `analysis/`. Multi-deck per project: each deck uses its archived stem, including any collision suffix, for `<stem>.*` artifacts and its `decks[]` entry in the shared `source_profile.json` index. Re-running intake for an existing archived stem replaces its entry. The beautify profile stays single-deck and reads one chosen deck's `<stem>.*` artifacts.
+
+Usage boundary:
+- Standard generation uses these fields as facts and recommendation candidates; it does not inherit source slide coordinates or page order by default.
+- Beautify promotes selected identity/content fields into locked constraints after confirmation and redraws SmartArt meaning with ordinary editable shapes.
+
+## `pptx_to_svg.py`
+
+Reconstruct a PPTX package as editable SVG views by reading OOXML directly.
+
+```bash
+python3 scripts/pptx_to_svg.py deck.pptx --inheritance-mode both
+python3 scripts/pptx_to_svg.py deck.pptx --inheritance-mode layered
+python3 scripts/pptx_to_svg.py deck.pptx --inheritance-mode flat
+python3 scripts/pptx_to_svg.py deck.pptx --strict
+```
+
+| Mode | Output |
+|---|---|
+| `both` (default) | Layered master/layout/slide SVGs under `svg/`, plus self-contained slides under `svg-flat/` |
+| `layered` | Only the layered `svg/` view and inheritance metadata |
+| `flat` | One self-contained slide SVG per page under `svg/` |
+
+Every mode also writes a canonical `animations.json`. Its default transition
+is `none`, so slides without a source transition stay transition-free when the
+workspace is exported again.
+
+For Office pictures that carry both a raster compatibility preview on
+`a:blip` and an editable SVG relationship in `asvg:svgBlip`, import resolves
+the SVG relationship first. The raster relationship is used only when the SVG
+relationship or media part cannot be read. The template manifest uses the same
+relationship preference for asset identity; its existing missing-media gate
+remains strict rather than silently treating the raster preview as the
+template's canonical asset.
+
+Supported `a:hlinkClick` on shape/picture `p:cNvPr` and text `a:rPr` becomes
+the shared SVG `<a href>` form for absolute external URIs and source-roster
+`#slide-N` jumps. A source shape that also has linked inner runs uses the
+importer-only `data-pptx-shape-hyperlink` transport to avoid nested SVG anchors.
+Unsupported click actions produce a diagnostic; strict import stops.
+
+### Import compatibility and recovery boundary
+
+Import is tolerant by default because the source deck is user-owned or comes
+from third-party authoring tools. Recovery happens at the narrowest safe
+boundary: first omit only an unsupported property or feature; if that is not
+possible, replace only the affected object with a visible diagnostic
+placeholder; omit a background without discarding its page. Corrupt ZIP/XML or
+missing required package structure remains fatal because no safe local recovery
+exists. Pass `--strict` for parser development or contract verification when
+the first unsupported/malformed source construct should stop conversion.
+
+Every successful run writes `<output>/conversion-report.json`. Its stable
+top-level fields are `schemaVersion`, `source`, `mode`, `summary`, `artifacts`,
+and `diagnostics`; `artifacts.animationConfig` and
+`artifacts.animationMedia` identify the converter-owned sidecar and transition
+sounds. Each diagnostic records a reason `code`, source `message`, chosen
+`fallback`, package `part_path`, and—when available—`slide_index`, `shape_id`,
+`shape_name`, and `shape_kind`. The command also prints a bounded warning
+summary instead of a raw Python traceback.
+
+In the detailed native-object notes below, “fails closed” or “error” describes
+the native replacement claim or strict mode. Default tolerant deck import
+retains the usable fallback/object and records the degradation; it does not
+discard unrelated shapes, pages, or the entire deck.
+
+Source `p:transition` and `p:timing` nodes are never silently implied by the
+static SVG view. Supported page transitions and finite object-animation
+sequences are reconstructed in `animations.json`; source timing outside either
+closed contract emits `transition-not-reconstructed` or
+`animation-not-reconstructed` with the exact source slide. Direct PPTX
+Fill/Enhance workflows remain the source-preserving route for all other timing;
+`--strict` stops on the first unreconstructed node.
+
+### Page-transition reverse import
+
+The importer accepts exactly the current generated-transition registry and
+validates the source carrier with the same read-back contract used after
+SVG-to-PPTX export. It reconstructs the canonical effect and all effective
+options, exact `p14:dur`, optional `advTm`, and an internal WAV transition
+sound. Sound bytes are extracted under the selected media directory with a
+content-addressed filename and referenced from the sidecar.
+
+This is a PPT Master-owned semantic loop, not a general transition normalizer.
+Unknown effects, legacy `p:transition@spd`, visual effects without exact
+`p14:dur`, `advClick="0"`, malformed carriers, and unsupported or broken sound
+relationships produce `transition-not-reconstructed` in tolerant mode;
+`--strict` stops. The converter never substitutes `fade` for those cases.
+
+### Finite object-animation reverse import
+
+The importer accepts only rows that pass the current generated-animation
+behavior-tree validator and map both their target and optional click trigger to
+one unique top-level slide SVG group. It reconstructs the canonical registry
+effect, non-default effective options, Animation Pane order, Start trigger,
+exact native duration, and relative delay. Repeated targets use `effects[]`;
+shape-triggered rows restore `trigger_shape`.
+
+This exact-duration subset covers 199 of the 203 registered effects. The four
+native rows without a readable behavior duration—`emphasis_change_font`,
+`emphasis_change_font_style`, `emphasis_transparency`, and
+`emphasis_bold_reveal`—remain diagnosed because their authored scheduling span
+cannot be separated honestly from the following delay. Repeat/reverse/rewind,
+acceleration/bounce/restart, after-effects, animation sounds, paragraph or
+Chart/SmartArt builds, media commands, unknown behavior trees, and targets that
+do not map to a top-level SVG group likewise produce
+`animation-not-reconstructed`; `--strict` stops. The importer never invents a
+replacement timing tree.
+
+### Native formula reverse import
+
+The importer reconstructs formulas from the native compiler's closed OMML
+vocabulary after the import-only color normalization below. One formula-only
+`a14:m > m:oMathPara` text shape becomes a bounded
+`<g data-pptx-replace-with="formula">` with canonical
+LaTeX JSON and a visible linear SVG preview when its carrier is an ungrouped,
+unstyled, unrotated rectangular formula shape. Carrier styling, effects,
+hyperlinks, or placeholder ownership force diagnosed fallback rather than
+silent loss.
+Supported `a14:m > m:oMath` zones inside an ordinary paragraph become leaf
+`<tspan data-pptx-inline-formula="...">preview</tspan>` markers while retaining
+their surrounding text runs. The generated markers pass the same native-object
+and inline-formula validators used by SVG-to-PPTX export.
+
+**Color normalization** applies only to `a:solidFill` directly inside
+`m:r/a:rPr` or `m:ctrlPr/a:rPr`. Each fill must contain exactly one correctly
+namespaced `a:srgbClr` or `a:schemeClr`. The shared color resolver uses the
+caller's effective palette and color map, never a fixed `theme1.xml`, and
+strictly validates color attributes and the supported `alpha`, `alphaMod`,
+and `alphaOff` modifiers even during tolerant import. The importer validates
+resource limits before normalization and changes a copy of the OMML only.
+Resolved RGB replaces the color node before the unchanged compiler validator
+runs. The resolved marker color is the formula's base: block JSON `color` or
+inline run `fill`. Serialization omits run and control colors already supplied
+by that base or an enclosing local color scope. Only changes to the effective
+color become LaTeX `\textcolor` scopes; nested scopes can explicitly restore
+the base color when needed. Theme tokens become current RGB values and lose
+their original theme-token linkage. Re-export applies the exporter's existing anchor mapping
+to marker defaults; local LaTeX color scopes remain explicit RGB overrides.
+
+**Transparency** must remain representable by the destination marker and its
+existing exporter. Inline formulas retain one uniform effective alpha across
+their runs and controls through the marker's `fill` / `fill-opacity` style;
+surrounding runs retain their own opacity. This includes the uniform alpha
+emitted by PPT Master's inline exporter with local color overrides. Alpha
+must fit DrawingML's 1/100000 precision. Mixed alpha, including an opaque run
+or control among translucent ones, is not reconstructed. Block markers keep
+RGB in JSON `color`; their existing exporter emits opaque RGB only, so a
+translucent block formula also takes the diagnosed opaque-`txBody` path.
+Alpha is never discarded to make a formula pass validation.
+
+Canonical read-back uses explicit braces for script bases and argument bodies,
+`\left` / `\right` for delimiter nodes, Unicode glyphs for symbols, `\mathrm`
+for upright math runs, and `\mathop` for function nodes. Insignificant source
+whitespace is not recovered. Recompilation may split or join adjacent runs
+with identical effective styling without changing their text or appearance.
+
+This is normalized semantic read-back, not recovery of the author's original
+LaTeX spelling and not a general Office Math converter. Multiple color
+children, incorrect namespaces, unresolved theme colors, unsupported modifiers,
+and unknown OMML remain outside the reversible subset. Every normalized root must
+pass the compiler's namespace, element, attribute, structure, size, and depth
+gates, and the reconstructed LaTeX must compile again under the same profile.
+If any formula in one text body falls outside that boundary, tolerant import
+keeps all formulas in that body as readable linear text and retains the
+relationship-free source `txBody` as opaque metadata instead of partially
+claiming native reconstruction. It records `formula-not-reconstructed`;
+`--strict` stops on the same condition.
+
+### Native table and chart import claims
+
+Supported text-grid tables and conservative classic-chart caches carry a
+`data-pptx-replace-with` claim plus
+`data-pptx-native-authority="json"` beside their SVG preview, with the
+authoritative replacement payload in a child
+`<metadata type="application/json">`. The parent claim
+selects the table or chart schema. Table import requires
+exact physical row/grid topology and accepts canonical rectangular merges,
+safe solid/no-fill per-side borders, plain multi-paragraph cells, and a closed
+run-rich paragraph schema.
+Each run requires `text` and may use only `bold`, `italic`, `underline`,
+`strike`, `color`, `font_size`, one `font_family`, `lang`, and `alt_lang`.
+Presentation-only source run XML without a non-empty `effectLst` / `effectDag`
+normalizes. A table-cell run effect disables native replacement and adds a
+blocking effect diagnostic. Relationship-bearing text, extensions,
+noncanonical/overlapping merges, nonblank merge slaves, unsafe border XML,
+non-solid fills, structural line breaks/fields/tabs/bullets, and broken text
+topology remain fallback-only.
+Markers remain dormant
+unless a later export uses `--native-charts-and-tables`. That opt-in is
+data-object-first: the default fallback still exports as editable DrawingML
+shapes, while the opt-in supplies a data source and PowerPoint's
+chart/table-specific object model.
+The native-object route may normalize styling or omit marker-local details not represented by the
+payload, and export reports that risk without disabling an otherwise supported
+active marker. Unsupported tables keep their
+rendered SVG table; unsupported charts keep a baked preview when one exists.
+For the currently supported parsed classic families (column/bar/line/area,
+pie/doughnut, scatter, and bubble), a chart without a baked preview receives a
+deterministic readable fallback marked
+`data-pptx-fallback-kind="normalized"`. Unknown style XML disables the native
+replacement claim or falls back to a diagnostic object in tolerant mode;
+common solid/no-fill/line/marker forms and scheme colors are normalized for the
+SVG fallback and core payload colors, while native opt-in may still normalize
+unmodeled alpha, line, marker, or no-fill details. Common General, decimal,
+grouped, percent, and simple currency-prefix data-label formats render
+deterministically; an unknown Excel format program keeps the active payload but
+does not claim a normalized fallback. Active types outside the current renderer
+continue to use an explicit placeholder marked
+`data-pptx-fallback-kind="placeholder"`. Validation and export report that
+reconstruction-only fallback as a warning. Default export keeps the
+placeholder; when the same group has a valid active chart replacement payload,
+`--native-charts-and-tables` may still reconstruct the PowerPoint-native chart.
+Invalid or contradictory fallback declarations remain errors. Fallback-only
+replacement capability uses `data-pptx-replacement-status` and remains a
+warning when the SVG fallback itself is complete. Imported table/chart groups
+under this contract carry `data-pptx-import-source="pptx"`, whether active or
+fallback-only; generated authoring omits this provenance attribute.
+
+JSON-first imported markers do not use preview freshness to veto native export;
+their preview may be normalized or approximate. Free-designed Chart/Table
+markers omit the authority attribute and are SVG-first. After their visible
+fallback and JSON are synchronized, `stamp_native_fallbacks.py --write` records
+`data-pptx-fallback-sha256` over the canonical fallback plus reachable
+document-level SVG definitions. A later visible/reference/transform edit makes
+that baseline stale. Default export keeps the edited fallback; canonical check
+and `--native-charts-and-tables` fail before replacement. A missing/invalid
+SVG-first baseline also fails native replacement. The hash detects later edits;
+it does not prove that independently authored JSON matches the SVG.
+
+Legacy `data-pptx-native*`, `data-pptx-visual-status`, and
+`data-pptx-route-status` spellings remain read-compatible. New importer output
+and generated SVG use the replacement/fallback names above. The old
+`--native-objects` option remains a compatibility alias for
+`--native-charts-and-tables`.
+
+For table style `{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}`, the importer resolves
+the normalized `wholeTbl`, `firstRow`, `band1H`/`band2H`, theme color/font, and
+direct-format override subset. Other built-in/custom style families remain
+outside this guarantee.
+
+The chart importer also accepts the verified column/line/area combo subset,
+canonical four-series OHLC stock charts with shared numeric date caches, area
+charts with numeric date axes, and verified scatter/bubble charts with a closed
+pair of `axes.x` / `axes.y` value axes. Combo primary/secondary plots may retain
+independent category caches and workbook ranges. Both the category/value and XY
+contracts read back the supported kind/position/visibility, label-position,
+number-format, min/max/major-unit, reverse, and major-gridline fields; the native
+writer emits every field in those closed contracts. Scatter style is derived
+from uniform effective series line/marker/smooth state. The normalized XY
+fallback newly consumes only the two major-gridline flags, not the remaining
+axis fields. The importer also accepts radar, safe `of_pie` `serLines`, the
+closed axis/title/legend normalization cases, and bar/column `gapWidth` /
+`overlap`. `gapWidth` must be one integer in `0..500` and `overlap` one integer
+in `-100..100`; both normalize in native output, while malformed, duplicate, or
+out-of-range values disable the native replacement claim in tolerant mode and
+stop strict import. These additions do not expand the normalized
+renderer.
+Safe stock series style may pass the structural gate, while stock series,
+`hiLowLines`, and up-down bar local styling can still normalize under the
+data-object-first contract.
+ChartEx import accepts exactly the validated treemap, sunburst, histogram,
+pareto, box-whisker, waterfall, and funnel data models. Their supported
+hierarchy/category/value/series/subtotal topology round-trips to native output.
+Numeric caches must be non-empty and finite, with canonical non-negative counts
+and indexes and exact contiguous point topology. Source style, axes, labels,
+and binning details may normalize. This is not full `AxisSpec`, arbitrary
+ChartEx import or presentation fidelity, arbitrary stock variants, other
+date-axis chart families, or unlisted axis semantics. ChartEx native output
+still consumes valid payload colors in its color-style part.
+
+Exporter-canonical charts recover canonical solid series/slice colors and exact
+one- or two-paragraph title styling; two paragraphs retain their `title` /
+`subtitle` roles. This is not a general source-chart style round-trip guarantee.
+
+Concrete slide SVGs resolve `<a:fld type="slidenum">` using the presentation's
+`firstSlideNum` display numbering. Standalone master/layout SVGs keep the
+literal field fallback because one shared part can serve multiple slides.
+
+### Maintenance smoke checks
+
+Run these checks from the repository root after changing `pptx_to_svg/` or its
+CLI. They generate every required input under `/tmp`; do not replace them with
+a committed `test_*.py` suite.
+
+#### Healthy generated deck
+
+```bash
+python3 - <<'PY'
+from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.util import Inches
+
+presentation = Presentation()
+slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+shape = slide.shapes.add_shape(
+    MSO_SHAPE.RECTANGLE,
+    Inches(1),
+    Inches(1),
+    Inches(3),
+    Inches(1),
+)
+shape.text = "PPTX import smoke check"
+presentation.save("/tmp/ppt-master-smoke-healthy.pptx")
+PY
+
+python3 "skills/ppt-master/scripts/pptx_to_svg.py" \
+  "/tmp/ppt-master-smoke-healthy.pptx" \
+  --inheritance-mode flat \
+  -o "/tmp/ppt-master-smoke-healthy"
+python3 -c "import json; from pathlib import Path; report = json.loads(Path('/tmp/ppt-master-smoke-healthy/conversion-report.json').read_text()); assert report['summary'] == {'slides': 1, 'warnings': 0}, report['summary']; print('OK: 1 slide, 0 warnings')"
+```
+
+Expected: both commands exit `0`; the assertion prints
+`OK: 1 slide, 0 warnings`.
+
+#### Tolerant/strict color-structure probe
+
+Generate a two-shape PPTX, then add one foreign attribute to the first shape's
+valid `a:srgbClr` node:
+
+```bash
+python3 -c '
+from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
+
+from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.util import Inches
+
+base = Path("/tmp/ppt-master-color-smoke-base.pptx")
+target = Path("/tmp/ppt-master-color-smoke.pptx")
+presentation = Presentation()
+slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+for left, color in ((1, (0x44, 0x72, 0xC4)), (4, (0xED, 0x7D, 0x31))):
+    shape = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        Inches(left),
+        Inches(1),
+        Inches(2),
+        Inches(1),
+    )
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = RGBColor(*color)
+presentation.save(base)
+
+with ZipFile(base) as source, ZipFile(target, "w", ZIP_DEFLATED) as destination:
+    patched = False
+    for member in source.infolist():
+        payload = source.read(member)
+        if member.filename == "ppt/slides/slide1.xml":
+            old = b"<a:srgbClr val=\"4472C4\"/>"
+            new = b"<a:srgbClr val=\"4472C4\" legacy=\"1\"/>"
+            if old not in payload:
+                raise RuntimeError("probe color node was not generated")
+            payload = payload.replace(old, new, 1)
+            patched = True
+        destination.writestr(member, payload)
+if not patched:
+    raise RuntimeError("slide XML was not patched")
+print(target)
+'
+```
+
+Run tolerant import and verify both the recovery report and the visible SVG:
+
+```bash
+python3 "skills/ppt-master/scripts/pptx_to_svg.py" \
+  "/tmp/ppt-master-color-smoke.pptx" \
+  --inheritance-mode flat \
+  -o "/tmp/ppt-master-smoke-color-tolerant"
+python3 -c '
+import json
+from pathlib import Path
+
+output = Path("/tmp/ppt-master-smoke-color-tolerant")
+report = json.loads((output / "conversion-report.json").read_text())
+diagnostics = report["diagnostics"]
+svg = (output / "svg" / "slide_01.svg").read_text()
+assert report["summary"] == {"slides": 1, "warnings": 1}, report["summary"]
+assert len(diagnostics) == 1, diagnostics
+assert diagnostics[0]["code"] == "color-structure-normalized", diagnostics[0]
+assert diagnostics[0]["fallback"] == "retain recognized color attributes and modifiers", diagnostics[0]
+assert diagnostics[0]["slide_index"] == 1, diagnostics[0]
+assert diagnostics[0]["shape_name"] == "Rectangle 1", diagnostics[0]
+assert "#4472C4" in svg and "#ED7D31" in svg
+print("OK: tolerant import recovered #4472C4 and preserved #ED7D31")
+'
+```
+
+Expected: both commands exit `0`; the importer reports one
+`color-structure-normalized` warning and the assertion prints
+`OK: tolerant import recovered #4472C4 and preserved #ED7D31`.
+
+Run the same probe in strict mode:
+
+```bash
+python3 "skills/ppt-master/scripts/pptx_to_svg.py" \
+  "/tmp/ppt-master-color-smoke.pptx" \
+  --inheritance-mode flat \
+  --strict \
+  -o "/tmp/ppt-master-smoke-color-strict"
+```
+
+Expected: exit `1`, no traceback, and one error line:
+
+```text
+Error: PPTX-to-SVG conversion failed: Invalid DrawingML sRGB color structure
+```
+
+## `source_to_md/web_to_md.py`
+
+Convert web pages to Markdown and download images locally by default. Use
+`--no-images` to retain remote image links without downloading their files.
+Pages, images, and redirect targets must be public HTTP(S) hosts with valid
+TLS; `--insecure` skips certificate checks, `--allow-private-hosts` admits
+intranet and loopback addresses.
+
+```bash
+python3 scripts/source_to_md/web_to_md.py https://example.com/article
+python3 scripts/source_to_md/web_to_md.py https://url1.com https://url2.com
+python3 scripts/source_to_md/web_to_md.py -f urls.txt
+python3 scripts/source_to_md/web_to_md.py https://example.com -o output.md
+python3 scripts/source_to_md/web_to_md.py https://example.com --emit-result /tmp/result.json
+python3 scripts/source_to_md/web_to_md.py https://example.com -o evidence.md --no-images
+```
+
+When `curl_cffi` is installed (included in `requirements.txt`), this script
+automatically impersonates a modern Chrome TLS fingerprint, which lets it
+fetch WeChat Official Accounts (`mp.weixin.qq.com`) and other sites that
+block Python's default TLS fingerprint. No extra flags needed. If
+`curl_cffi` is not available, it falls back to plain `requests`.
+
+On success, the converter uses the shared best-effort sidecar contract for
+`<stem>.conversion_profile.json` beside the Markdown output.
+`--emit-result` is for wrapper scripts that need the actual saved Markdown path
+when the converter derives a title-based filename.
+
+## Image Orientation Review
+
+Run this review when the user requests orientation correction, converted text
+asks the reader to rotate the device, or a downloaded asset is visibly
+sideways. EXIF and dimensions may trigger review, but they cannot determine the
+semantic direction of pixels that are already stored sideways.
+
+Generate a labeled static contact sheet. This command previews the first frame
+after EXIF normalization and does not modify source images:
+
+```bash
+python3 ${SKILL_DIR}/scripts/rotate_images.py sheet <images_directory>
+```
+
+The default output is
+`<images_directory>/../analysis/<directory>_orientation_contact_sheet.jpg`.
+Inspect it with the current multimodal agent, identify only visually confirmed
+rotations, and write a temporary JSON list. `rotation` is clockwise degrees and
+must be `90`, `180`, or `270`:
+
+```json
+[
+  {"path": "/absolute/path/to/sideways.jpg", "rotation": 270}
+]
+```
+
+Apply the confirmed fixes and regenerate image facts:
+
+```bash
+python3 ${SKILL_DIR}/scripts/rotate_images.py fix /tmp/orientation_fixes.json
+python3 ${SKILL_DIR}/scripts/analyze_images.py <images_directory>
+```
+
+GIF files are excluded: `sheet` does not list them, and `fix` rejects a batch
+that references one so all GIF files remain unchanged.
+
+Do not infer a rotation from prose, EXIF, or aspect ratio alone, and do not
+launch the HTML `gen` command in source intake. `auto` remains an in-place EXIF
+normalizer. `gen` is a compatibility UI that runs the same normalization before
+writing HTML; neither belongs to source intake.

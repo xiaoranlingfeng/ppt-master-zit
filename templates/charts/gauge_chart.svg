@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     font-size="12">
+    <!--
+    Gauge Chart Template
+    Usage: One bounded metric against one explicit goal or threshold
+    Scenarios: KPI completion, health index, performance score
+    Skip: Multiple peer metrics; use bullet_chart or progress_bar_chart
+    -->
+    <!-- Background -->
+    <rect width="1280" height="720" fill="#F8FAFC"/>
+    <!-- Title -->
+    <g id="header" data-pptx-bounds="40 15 1200 125">
+        <text x="640" y="60"
+              font-size="32" font-weight="700" fill="#0F172A" text-anchor="middle">Sales Target Attainment</text>
+        <text x="640" y="95"
+              font-size="18" fill="#64748B" text-anchor="middle">Q4 2025 · Actual 85% against an 80% target</text>
+    </g>
+    <!-- One hero gauge: Sales target attainment 85% -->
+    <g id="heroGauge" data-pptx-bounds="395 125 490 440" transform="translate(640, 380)">
+        <g id="gaugeScale" transform="scale(1.35)">
+        <!-- Scales (0-60% Red, 60-80% Amber, 80-100% Emerald) -->
+        <path d="M -150,0 A 150,150 0 0,1 46.35,-142.66" fill="none" stroke="#FECACA" stroke-width="30" stroke-linecap="round"/>
+        <path d="M 46.35,-142.66 A 150,150 0 0,1 121.35,-88.17" fill="none" stroke="#FDE68A" stroke-width="30" stroke-linecap="round"/>
+        <path d="M 121.35,-88.17 A 150,150 0 0,1 150,0" fill="none" stroke="#A7F3D0" stroke-width="30" stroke-linecap="round"/>
+        <!-- Tick Marks -->
+        <line x1="-135" y1="0" x2="-120" y2="0" stroke="#64748B" stroke-width="2"/>
+        <line x1="-95.5" y1="-95.5" x2="-84.85" y2="-84.85" stroke="#64748B" stroke-width="2"/>
+        <line x1="0" y1="-135" x2="0" y2="-120" stroke="#64748B" stroke-width="2"/>
+        <line x1="95.5" y1="-95.5" x2="84.85" y2="-84.85" stroke="#64748B" stroke-width="2"/>
+        <line x1="135" y1="0" x2="120" y2="0" stroke="#64748B" stroke-width="2"/>
+        </g>
+        <!-- Tick Labels -->
+        <text x="-215" y="30"
+              font-size="14" fill="#64748B" text-anchor="middle">0%</text>
+        <text x="0" y="-230"
+              font-size="14" fill="#64748B" text-anchor="middle">50%</text>
+        <text x="215" y="30"
+              font-size="14" fill="#64748B" text-anchor="middle">100%</text>
+        <!-- Needle (85% = 153°, start from -90°) -->
+        <g id="gaugeNeedle" transform="scale(1.35)">
+            <g transform="rotate(63)">
+                <path d="M 0,-100 L -8,0 L 0,15 L 8,0 Z" fill="#0F172A"/>
+            </g>
+            <circle cx="0" cy="0" r="15" fill="#0F172A"/>
+            <circle cx="0" cy="0" r="8" fill="#FFFFFF"/>
+        </g>
+        <!-- Center Value -->
+        <text x="0" y="80"
+              font-size="64" font-weight="700" fill="#10B981" text-anchor="middle">85%</text>
+        <text x="0" y="125"
+              font-size="24" font-weight="600" fill="#0F172A" text-anchor="middle">Current achievement</text>
+        <!-- Status Tag -->
+        <rect x="-68" y="142" width="136" height="35" rx="18" fill="#D1FAE5"/>
+        <text x="0" y="166"
+              font-size="17" font-weight="600" fill="#047857" text-anchor="middle">Above target</text>
+    </g>
+    <!-- Threshold legend -->
+    <g id="legendBar" data-pptx-bounds="265 593 750 54" transform="translate(340, 600)">
+        <rect x="0" y="0" width="600" height="40" rx="8" fill="#FFFFFF" stroke="#E2E8F0"/>
+        <rect x="30" y="12" width="16" height="16" rx="3" fill="#FECACA"/>
+        <text x="55" y="24"
+              font-size="13" font-weight="600" fill="#475569">Critical (0-60%)</text>
+        <rect x="180" y="12" width="16" height="16" rx="3" fill="#FDE68A"/>
+        <text x="205" y="24"
+              font-size="13" font-weight="600" fill="#475569">Warning (60-80%)</text>
+        <rect x="340" y="12" width="16" height="16" rx="3" fill="#A7F3D0"/>
+        <text x="365" y="24"
+              font-size="13" font-weight="600" fill="#475569">Target (80-100%)</text>
+        <text x="500" y="24"
+              font-size="13" fill="#94A3B8">Benchmark: 80%</text>
+    </g>
+    <!-- Data Source -->
+    <g id="source" data-pptx-bounds="40 670 1200 40">
+        <text x="640" y="695"
+              font-size="14" fill="#94A3B8" text-anchor="middle">Source: Business Intelligence Platform · Q4 2025</text>
+    </g>
+</svg>

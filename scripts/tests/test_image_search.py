@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""Regression tests for image-search candidate promotion."""
+
+from __future__ import annotations
+
+import io
+import json
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stderr
+from pathlib import Path
+from unittest.mock import patch
+
+
+SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import image_search  # noqa: E402
+
+
+class ImageSearchPromotionTests(unittest.TestCase):
+    def test_quality_failure_reports_actual_required_and_metadata_dimensions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "images"
+            candidate_dir = output_dir / "candidates" / "hero"
+            candidate_dir.mkdir(parents=True)
+            candidates_path = candidate_dir / "candidates.json"
+            candidates_path.write_text(
+                json.dumps({
+                    "candidate_storage": "thumbnail-only",
+                    "target_filename": "hero.jpg",
+                    "request": {
+                        "min_width": 1200,
+                        "min_height": 800,
+                    },
+                    "candidates": [{
+                        "filename": "candidate_01.jpg",
+                        "provider": "pixabay",
+                        "width": 4836,
+                        "height": 2915,
+                        "download_url": "https://example.invalid/original.jpg",
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            def fake_download(_url: str, destination: str, **_kwargs) -> None:
+                Path(destination).write_bytes(b"fake downloaded image")
+
+            stderr = io.StringIO()
+            with (
+                patch.object(
+                    image_search,
+                    "download_image",
+                    side_effect=fake_download,
+                ),
+                patch.object(
+                    image_search,
+                    "_validate_downloaded_quality",
+                    return_value=False,
+                ),
+                patch.object(
+                    image_search,
+                    "_measure_actual_image",
+                    return_value=(1280, 772),
+                ),
+                redirect_stderr(stderr),
+            ):
+                result = image_search.promote_candidate(
+                    output_dir,
+                    "hero.jpg",
+                    "candidate_01.jpg",
+                )
+
+            self.assertEqual(result, 1)
+            message = stderr.getvalue()
+            self.assertIn("candidate promotion failed", message)
+            self.assertIn("measured 1280x772", message)
+            self.assertIn("required minimum 1200x800", message)
+            self.assertIn("metadata claimed 4836x2915", message)
+            self.assertFalse((output_dir / "hero.jpg").exists())
+            self.assertNotIn(
+                "selected",
+                json.loads(candidates_path.read_text(encoding="utf-8")),
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class CandidatePoolContinuationTests(unittest.TestCase):
+    def test_later_pages_keep_earlier_saved_thumbnails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cand_dir = Path(temp_dir) / "candidates" / "hero"
+            review_dir = cand_dir / "review"
+            review_dir.mkdir(parents=True)
+            (review_dir / "candidate_02.jpg").write_bytes(b"x")
+            meta_path = cand_dir / "candidates.json"
+            meta_path.write_text(json.dumps({
+                "target_filename": "hero.jpg",
+                "candidate_page": 1,
+                "request": {"query": "bronze mask"},
+                "candidates": [
+                    {"rank": 1, "filename": "candidate_01.jpg", "review": "review/candidate_01.jpg"},
+                    {"rank": 2, "filename": "candidate_02.jpg", "review": "review/candidate_02.jpg"},
+                ],
+            }), encoding="utf-8")
+            request = image_search.ImageSearchRequest(
+                query="bronze mask",
+                purpose="",
+                orientation="",
+                filename="hero.jpg",
+                slide="",
+                min_width=1,
+                min_height=1,
+            )
+            retained, pages = image_search._retained_pool_candidates(
+                meta_path,
+                review_dir,
+                request,
+                current_ranks={9, 10},
+            )
+            self.assertEqual([entry["rank"] for entry in retained], [2])
+            self.assertEqual(pages, [1])
+
+            changed = image_search.ImageSearchRequest(
+                query="jade cong",
+                purpose="",
+                orientation="",
+                filename="hero.jpg",
+                slide="",
+                min_width=1,
+                min_height=1,
+            )
+            self.assertEqual(
+                image_search._retained_pool_candidates(
+                    meta_path, review_dir, changed, current_ranks=set()
+                ),
+                ([], []),
+            )
+
+    def test_batch_mode_rejects_a_positional_query(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest = Path(temp_dir) / "image_queries.json"
+            manifest.write_text('{"items": []}', encoding="utf-8")
+            with redirect_stderr(io.StringIO()) as stderr:
+                with self.assertRaises(SystemExit):
+                    image_search.main(["--batch", str(manifest), "bronze mask"])
+            self.assertIn("positional query", stderr.getvalue())
+
+    def test_page_continuation_requires_a_saved_pool(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with redirect_stderr(io.StringIO()) as stderr:
+                with self.assertRaises(SystemExit):
+                    image_search.main([
+                        "bronze mask",
+                        "--filename", "hero.jpg",
+                        "-o", temp_dir,
+                        "--save-candidates",
+                        "--candidate-page", "2",
+                    ])
+            self.assertIn("none was saved", stderr.getvalue())
+
+    def test_multi_frame_camera_jpeg_keeps_its_primary_frame(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:  # pragma: no cover - Pillow is a runtime dependency
+            self.skipTest("Pillow unavailable")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "camera.jpg"
+            first = Image.new("RGB", (64, 48), (200, 20, 20))
+            second = Image.new("RGB", (64, 48), (20, 20, 200))
+            first.save(path, format="MPO", save_all=True, append_images=[second])
+            self.assertTrue(image_search._normalize_multi_frame_jpeg(path))
+            with Image.open(path) as image:
+                self.assertEqual(image.format, "JPEG")
+                self.assertEqual(getattr(image, "n_frames", 1), 1)
+                self.assertGreater(image.getpixel((3, 3))[0], 150)
+            self.assertFalse(image_search._normalize_multi_frame_jpeg(path))
+
+    def test_original_above_pillow_warning_size_is_halved_quietly(self) -> None:
+        import warnings
+
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "takin.jpg"
+
+            def materialize(path: Path) -> None:
+                Image.new("RGB", (200, 150), (120, 90, 60)).save(path, "JPEG")
+
+            with patch.object(Image, "MAX_IMAGE_PIXELS", 20_000), \
+                    warnings.catch_warnings(record=True) as caught, \
+                    redirect_stderr(io.StringIO()) as stderr:
+                warnings.simplefilter("always")
+                staged, size = image_search._stage_and_validate_image(
+                    target, materialize, min_width=0, min_height=0,
+                    enforce_thumbnail_floor=False,
+                )
+
+            self.assertEqual(size, (100, 75))
+            self.assertIn("downscaled a 200x150 original to 100x75", stderr.getvalue())
+            self.assertFalse(
+                [w for w in caught if issubclass(w.category, Image.DecompressionBombWarning)]
+            )
+            staged.unlink()
+
+    def test_multi_frame_camera_jpeg_bakes_exif_orientation(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "camera.jpg"
+            first = Image.new("RGB", (64, 48), "red")
+            exif = first.getexif()
+            exif[274] = 6
+            first.save(path, format="MPO", save_all=True, exif=exif,
+                       append_images=[Image.new("RGB", (64, 48), "blue")])
+            self.assertTrue(image_search._normalize_multi_frame_jpeg(path))
+            with Image.open(path) as image:
+                self.assertEqual(image.format, "JPEG")
+                self.assertEqual(image.size, (48, 64))
+                self.assertNotIn(274, image.getexif())
+
+
+class InfrastructurePenaltyTests(unittest.TestCase):
+    def _score(self, query: str, title: str) -> float:
+        from image_sources.provider_common import (
+            LICENSE_TIER_NO_ATTRIBUTION,
+            AssetCandidate,
+            ImageSearchRequest,
+            score_candidate,
+        )
+
+        candidate = AssetCandidate(
+            provider="test",
+            title=title,
+            license_tier=LICENSE_TIER_NO_ATTRIBUTION,
+            width=1600,
+            height=900,
+        )
+        return score_candidate(candidate, ImageSearchRequest(query=query))
+
+    def test_words_containing_transit_terms_are_not_penalized(self) -> None:
+        baseline = self._score("team", "team office")
+        for title in ("team business", "team trail", "team 网站"):
+            with self.subTest(title=title):
+                self.assertEqual(self._score("team", title), baseline)
+
+    def test_transit_photo_is_penalized_unless_requested(self) -> None:
+        self.assertLess(
+            self._score("team", "team bus station"),
+            self._score("team", "team office"),
+        )
+        self.assertGreater(self._score("bus station", "team bus station"), 0)
+
+
+class RequiredTermsGateTests(unittest.TestCase):
+    def test_latin_terms_match_whole_words_and_cjk_ignores_spacing(self) -> None:
+        from image_sources.provider_common import AssetCandidate, missing_required_terms
+
+        def missing(title: str, terms: tuple[str, ...]) -> list[str]:
+            return missing_required_terms(AssetCandidate(provider="test", title=title), terms)
+
+        self.assertEqual(missing("Tirana, Albania", ("Iran",)), ["Iran"])
+        self.assertEqual(missing("Tehran, Iran", ("Iran",)), [])
+        self.assertEqual(missing("LiberationMonument at night", ("Liberation Monument",)), [])
+        self.assertEqual(missing("重庆 解放 碑", ("解放碑",)), [])
