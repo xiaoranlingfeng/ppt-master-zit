@@ -9,7 +9,7 @@ This directory contains user-facing scripts for conversion, project setup, SVG p
 - `scripts/source_to_md.py`: unified source-document → Markdown dispatcher
 - `scripts/source_to_md/`: source-document → Markdown routing/batch helpers and backend converters (`_dispatcher.py`, `_batch.py`, `pdf_to_md.py`, `doc_to_md.py`, `excel_to_md.py`, `ppt_to_md.py`, `web_to_md.py`)
 - `scripts/image_backends/`: internal provider implementations used by `image_gen.py`
-- `scripts/tts_backends/`: internal TTS provider implementations used by `notes_to_audio.py`
+- `scripts/tts_backends/`: Edge, ElevenLabs, MiniMax, Qwen, CosyVoice, and OpenAI implementations used by `notes_to_audio.py`; provider configuration and audio/subtitle capabilities are in [docs/narration.md](./docs/narration.md)
 - `scripts/template_import/`: internal PPTX reference-preparation helpers used by `pptx_template_import.py`
 - `scripts/pptx_ooxml/`: shared OOXML intake, cloning, and package primitives
 - `scripts/svg_finalize/`: internal post-processing helpers used by `finalize_svg.py`
@@ -59,7 +59,7 @@ python3 scripts/update_repo.py
 | Animation resources | `sound_sync.py` | [sound vocabulary and sync](../templates/sounds/README.md); [docs/pptx-animations.md](./docs/pptx-animations.md) |
 | Spec maintenance | `update_spec.py`, `visualization_recall.py`; legacy `chart_recall.py` | [docs/update_spec.md](./docs/update_spec.md); [docs/visualization-recall.md](./docs/visualization-recall.md) |
 | Spec review | `spec_review/server.py`, `check_spec_annotations.py` | [docs/spec_review.md](./docs/spec_review.md) |
-| Image tools | `image_gen.py`, `image_treat.py`, `analyze_images.py`, `gemini_watermark_remover.py` | [docs/image.md](./docs/image.md) |
+| Image tools | `image_gen.py`, `image_treat.py`, `analyze_images.py`, `image_ocr.py`, `image_layers.py`, `gemini_watermark_remover.py` | [docs/image.md](./docs/image.md) |
 | Maintenance smokes | Inline temporary-project commands | [advanced image and motion](./docs/advanced-image-motion-smoke.md); [mask and gradient](./docs/mask-gradient-smoke.md); [multilingual text](./docs/multilingual-text-smoke.md) |
 | Repo maintenance | `update_repo.py` | README install/update section |
 | Troubleshooting | validation, preview, export, dependency issues | [docs/troubleshooting.md](./docs/troubleshooting.md) |
@@ -428,6 +428,12 @@ Repository update:
 python3 scripts/update_repo.py
 python3 scripts/update_repo.py --skip-pip
 ```
+
+Personal templates live in the Git-ignored `templates/local/` library. Before
+updating, the script migrates eligible unstaged additions from built-in indexes
+when the official entries are unchanged and the personal workspaces are untracked;
+ambiguous or conflicting changes remain for manual review. ZIP reinstalls must
+copy `.env`, `projects/`, and `skills/ppt-master/templates/local/` (if present).
 
 ## Recommendations
 

@@ -15,7 +15,7 @@ description: >
   user says 「grill me」「逐项确认」「别替我决定」or wants to decide every
   outline, page and transition personally.
 metadata:
-  version: "6.8.0"  # base: official ppt-master v6.8.0 · fork build: v6.8.0-comfyui.1
+  version: "6.10.0"  # base: official ppt-master v6.10.0 · fork build: v6.10.0-comfyui.1
   copyright: "Copyright (c) 2025-2026 Hugo He"
   license: "MIT"
   official_repository: "https://github.com/hugohe3/ppt-master"
@@ -49,7 +49,7 @@ use CWD, or assume a repo checkout. If unavailable, ask; never search or guess.
 
 | Selected route / profile | Runtime authority |
 |---|---|
-| Generate PPTX — Image to PPTX | [`workflows/profiles/image-to-pptx.md`](workflows/profiles/image-to-pptx.md); Codex-supported, always Quick |
+| Generate PPTX — Image to PPTX | [`workflows/profiles/image-to-pptx.md`](workflows/profiles/image-to-pptx.md); vision host, always Quick |
 | Generate PPTX — Beautify | [`workflows/profiles/beautify-pptx.md`](workflows/profiles/beautify-pptx.md); explicit Quick intent selects Quick, otherwise Default |
 | Generate PPTX — ordinary Default | [`workflows/generate-pptx.md`](workflows/generate-pptx.md); run [`workflows/interview-gate.md`](workflows/interview-gate.md) — D0–D3 before Stage 1, D5–D9 before Stage 2, D4 per page before authoring |
 | Generate PPTX — ordinary explicit Quick | [`workflows/profiles/quick-generate.md`](workflows/profiles/quick-generate.md); interview gate skipped |

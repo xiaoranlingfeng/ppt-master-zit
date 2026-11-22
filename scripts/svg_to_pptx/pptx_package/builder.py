@@ -12,6 +12,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import uuid
 import zipfile
@@ -43,7 +44,9 @@ from pptx_transitions import (
     NATIVE_TRANSITIONS,
     apply_slide_motion_xml,
     create_transition_xml,
+    merged_mce_bindings,
     normalize_transition_effect_request,
+    parse_xml_with_mce_bindings,
     read_slide_transition_xml,
     serialize_source_xml,
     set_directory_use_timings,
@@ -253,6 +256,8 @@ class RoundtripSlidePatch:
     animation_changed: bool
     notes_changed: bool
     advance_changed: bool = False
+    # Shared with this page's authoring-report document.
+    warnings: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -1159,7 +1164,7 @@ def _restore_roundtrip_nested_source_shapes(
     source_shapes: dict[str, ET.Element],
     restore_ids: set[str],
     traced_ids: dict[str, list[str]],
-) -> None:
+) -> list[ET.Element]:
     """Replace converter-safe nested placeholders with exact source shapes."""
     locations: dict[str, tuple[ET.Element, ET.Element]] = {}
 
@@ -1182,6 +1187,7 @@ def _restore_roundtrip_nested_source_shapes(
         if node.tag == f"{{{PML_NS}}}grpSp":
             index_children(node)
 
+    restored_nodes: list[ET.Element] = []
     for source_id in sorted(restore_ids, key=_roundtrip_shape_sort_key):
         candidate_ids = {source_id}
         candidate_ids.update(traced_ids.get(f"shape-{source_id}", []))
@@ -1206,6 +1212,8 @@ def _restore_roundtrip_nested_source_shapes(
         position = list(parent).index(placeholder)
         parent.remove(placeholder)
         parent.insert(position, clone)
+        restored_nodes.append(clone)
+    return restored_nodes
 
 
 def _roundtrip_shape_sort_key(value: str) -> tuple[int, int | str]:
@@ -1321,9 +1329,6 @@ def _replace_roundtrip_motion(
         for carrier in transition_carriers(source_root):
             source_root.remove(carrier)
         if generated_carriers:
-            clone = ET.fromstring(
-                ET.tostring(generated_carriers[0], encoding="utf-8")
-            )
             children = list(source_root)
             insert_at = next(
                 (
@@ -1336,7 +1341,7 @@ def _replace_roundtrip_motion(
                 ),
                 len(children),
             )
-            source_root.insert(insert_at, clone)
+            source_root.insert(insert_at, generated_carriers[0])
     elif transition_changed:
         _replace_roundtrip_transition_advance(source_root, generated_root)
 
@@ -1348,7 +1353,6 @@ def _replace_roundtrip_motion(
             source_root.remove(existing_timing)
         if generated_timing is None:
             return
-        clone = ET.fromstring(ET.tostring(generated_timing, encoding="utf-8"))
         children = list(source_root)
         insert_at = next(
             (
@@ -1358,7 +1362,7 @@ def _replace_roundtrip_motion(
             ),
             len(children),
         )
-        source_root.insert(insert_at, clone)
+        source_root.insert(insert_at, generated_timing)
 
 
 def _replace_roundtrip_transition_advance(
@@ -1671,7 +1675,7 @@ def _renumber_roundtrip_generated_shapes(
         return {}
     for element in generated_shapes:
         for connector_tag in ("stCxn", "endCxn"):
-            for connector in element.iter(f"{{{PML_NS}}}{connector_tag}"):
+            for connector in element.iter(f"{{{DML_NS}}}{connector_tag}"):
                 old_id = connector.get("id")
                 if old_id in id_map:
                     connector.set("id", id_map[old_id])
@@ -1691,13 +1695,11 @@ def _apply_roundtrip_slide_overlay(
     """Overlay authored Slide objects onto the exact source slide package part."""
     try:
         source_root = ET.fromstring(source_slide)
-        generated_tree = ET.parse(generated_slide_path)
+        generated_root, generated_bindings = parse_xml_with_mce_bindings(generated_slide_path)
     except ET.ParseError as exc:
         raise TemplateStructureError(
             "Round-trip source or generated slide is not valid XML"
         ) from exc
-    generated_root = generated_tree.getroot()
-
     source_tree = source_root.find(
         f".//{{{PML_NS}}}cSld/{{{PML_NS}}}spTree"
     )
@@ -1906,12 +1908,23 @@ def _apply_roundtrip_slide_overlay(
         generated_root,
         required_generated_relationship_ids,
     )
-    _restore_roundtrip_nested_source_shapes(
+    restored_nested_nodes = _restore_roundtrip_nested_source_shapes(
         generated_nodes,
         all_source_shapes,
         nested_restore_ids,
         traced_ids,
     )
+    # Keep source attachments in their original id space while generated shapes
+    # and their attachments are renumbered. Restored nested connectors are source
+    # objects too, even though their outer group was rebuilt.
+    source_connections = [
+        (connector, properties, connection, connection.get("id"))
+        for element in [*retained_source_nodes, *restored_nested_nodes]
+        for connector in element.iter(f"{{{PML_NS}}}cxnSp")
+        for properties in connector.iter(f"{{{PML_NS}}}cNvCxnSpPr")
+        for connection in properties
+        if connection.tag in {f"{{{DML_NS}}}stCxn", f"{{{DML_NS}}}endCxn"}
+    ]
     if patch.transition_changed or patch.animation_changed:
         _replace_roundtrip_motion(
             source_root,
@@ -1949,6 +1962,53 @@ def _apply_roundtrip_slide_overlay(
         for element in source_tree
         for value in _shape_ids_in_element(element)
     }
+    final_shapes = {
+        _direct_shape_id(element): element
+        for element in source_tree.iter()
+        if element.tag in _TOP_LEVEL_SHAPE_TAGS
+    }
+    for connector, properties, connection, source_target in source_connections:
+        target = source_target
+        if source_target in edited_ids:
+            candidates = {
+                renumbered_shape_id_map.get(candidate, candidate)
+                for candidate in traced_ids.get(f"shape-{source_target}", [])
+            } & visible_shape_ids
+            if len(candidates) > 1:
+                connector_id = _direct_shape_id(connector)
+                endpoint = connection.tag.rsplit("}", 1)[-1]
+                message = (
+                    f"{generated_slide_path.name}: connector {connector_id} {endpoint} "
+                    f"endpoint {source_target} maps to multiple edited objects; "
+                    "removed this attachment and preserved connector geometry. "
+                    "Reconnect this end to the intended object in PowerPoint, or keep "
+                    "one endpoint object in the authoring SVG before exporting again."
+                )
+                if patch.warnings is not None:
+                    patch.warnings.append({
+                        "code": "roundtrip-connector-attachment-detached",
+                        "connector_id": connector_id,
+                        "endpoint": endpoint,
+                        "source_target_id": source_target,
+                        "candidate_ids": sorted(candidates, key=_roundtrip_shape_sort_key),
+                        "message": message,
+                    })
+                print(f"[ROUNDTRIP][WARNING] {message}", file=sys.stderr)
+                target = None
+            elif candidates:
+                target = next(iter(candidates))
+                generated_endpoint = final_shapes[target]
+                source_endpoint = all_source_shapes.get(source_target)
+                if source_endpoint is not None and generated_endpoint.tag != source_endpoint.tag:
+                    # A top-level picture may acquire an animation wrapper. Its
+                    # connection sites still belong to the picture inside it.
+                    leaves = list(generated_endpoint.iter(source_endpoint.tag))
+                    if len(leaves) == 1:
+                        target = _direct_shape_id(leaves[0])
+        if source_target in deleted_ids or target not in visible_shape_ids:
+            properties.remove(connection)
+        elif target != connection.get("id"):
+            connection.set("id", target)
     if not patch.animation_changed:
         missing_timing_targets = _timing_shape_ids(source_root) - visible_shape_ids
         if missing_timing_targets:
@@ -1957,7 +2017,11 @@ def _apply_roundtrip_slide_overlay(
                 "animations.json explicitly: "
                 + ", ".join(sorted(missing_timing_targets, key=int))
             )
-    serialized_slide = serialize_source_xml(source_root, source_slide)
+    serialized_slide = serialize_source_xml(
+        source_root,
+        source_slide,
+        additional_bindings=merged_mce_bindings(source_root, generated_bindings),
+    )
     if not patch.transition_changed:
         serialized_slide = _preserve_roundtrip_transition_markup(
             serialized_slide,
@@ -8686,7 +8750,16 @@ def create_pptx_with_native_svg(
             raise RuntimeError(
                 f'PPTX animation package validation failed: {exc}'
             ) from exc
-        shutil.move(str(temp_output_path), str(output_path))
+        if pptx_structure == 'preserve':
+            try:
+                os.replace(temp_output_path, output_path)
+            except OSError as exc:
+                raise TemplateStructureError(
+                    f"Cannot atomically publish round-trip output {output_path}: {exc}. "
+                    "Choose a different output path on a writable local filesystem."
+                ) from exc
+        else:
+            shutil.move(str(temp_output_path), str(output_path))
         permission_warnings = _relax_output_permissions(output_path)
 
         if conversion_trace_path and conversion_trace is not None:

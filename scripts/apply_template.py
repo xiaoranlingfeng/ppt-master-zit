@@ -5,7 +5,7 @@ Runs the install half of ``workflows/stages/apply-template-workspace.md`` §4
 as one command: validate every root, map each spec to its kind-qualified
 project name, resolve the structural owner (Layout over Deck), copy the owner's
 roster and every root's ``images/`` / ``icons/`` once, refuse destination
-collisions and duplicate kinds before writing anything, prepend one provenance
+collisions and duplicate kinds before writing anything, write one provenance
 line under each copied spec's H1, and print the §5.3 completion receipt.
 
 Usage::
@@ -43,6 +43,8 @@ from register_template import (  # noqa: E402
     SpecParseError,
     _read_spec,
     _validate_spec_shape,
+    get_library_paths,
+    get_library_scope,
     validate_qualified_spec_identity,
 )
 
@@ -93,7 +95,11 @@ class RootRecord:
         if self.source == "library":
             kind = self.specs[0].kind
             kind_dir = KIND_CONFIG[kind]["dir"].name
-            return f"skills/ppt-master/templates/{kind_dir}/{self.specs[0].template_id}/"
+            scope = get_library_scope(self.root, kind)
+            prefix = "skills/ppt-master/templates"
+            if scope == "local":
+                prefix += "/local"
+            return f"{prefix}/{kind_dir}/{self.specs[0].template_id}/"
         return f"{self.root}/"
 
 
@@ -175,16 +181,18 @@ def _source_label(root: Path, specs: list[SpecRecord]) -> str:
     if len(specs) != 1:
         return "explicit"
     spec = specs[0]
-    config = KIND_CONFIG[spec.kind]
-    library_root = (config["dir"] / spec.template_id).resolve()
+    scope = get_library_scope(root, spec.kind)
+    if scope is None:
+        return "explicit"
+    directory, index_path = get_library_paths(spec.kind, scope)
+    library_root = (directory / spec.template_id).resolve()
     if root.resolve() != library_root:
         return "explicit"
-    index_path = config["index"]
     try:
         index = json.loads(index_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return "explicit"
-    return "library" if spec.template_id in index else "explicit"
+    return "library" if isinstance(index, dict) and spec.template_id in index else "explicit"
 
 
 def _load_root(supplied: str, project: Path) -> RootRecord:
@@ -287,7 +295,18 @@ def _spec_with_provenance(spec_path: Path, record: RootRecord) -> bytes:
     )
     if h1 is None:
         raise ApplyTemplateError(f"{spec_path} has no H1 to anchor the provenance line")
-    rewritten = lines[: h1 + 1] + ["", _provenance_line(record)] + lines[h1 + 1 :]
+    end = h1 + 1
+    has_provenance = False
+    while end < len(lines):
+        line = lines[end]
+        if line.startswith("> **Installed from**: `") and line.endswith(("` (library)", "` (explicit)")):
+            has_provenance = True
+        elif line.strip():
+            break
+        end += 1
+    # Replace only the generated header block; body examples remain source text.
+    tail = [""] + lines[end:] if has_provenance else lines[h1 + 1 :]
+    rewritten = lines[: h1 + 1] + ["", _provenance_line(record)] + tail
     return "\n".join(rewritten).encode("utf-8")
 
 

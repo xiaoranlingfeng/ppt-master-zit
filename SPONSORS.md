@@ -8,7 +8,7 @@ Want to support the project or discuss a partnership? See the [sponsorship guide
 
 ## Current Model Recommendation
 
-For the best results, use **[Kimi K3](https://www.kimi.com/code/?aff=ppt-master)** (or Claude) to drive the workflow, paired with **`gpt-image-2.5-sunburst`** (OpenAI) or **`gemini-nano-banana-2.1`** (Google) for AI image generation. If model capability is limiting output quality, upgrade the driving model before weakening the workflow or its quality requirements.
+For the best results, use **[Kimi K3.1](https://www.kimi.com/code/?aff=ppt-master)** (or Gemini) to drive the workflow, paired with **`gpt-image-2.6-sunburst`** (OpenAI) or **`gemini-nano-banana-2.1`** (Google) for AI image generation. If model capability is limiting output quality, upgrade the driving model before weakening the workflow or its quality requirements.
 
 ## Kimi
 
@@ -39,6 +39,12 @@ Thanks to [Kimi](https://www.kimi.com/code/?aff=ppt-master) for sponsoring PPT M
 <a href="https://runapi.host/register?aff=WMLJ"><img src="https://raw.githubusercontent.com/hugohe3/ppt-master/main/docs/assets/sponsors/runapi.png" alt="RunAPI" width="150"></a>
 
 [RunAPI](https://runapi.host/register?aff=WMLJ) provides access to 150+ models, including OpenAI, Claude, Gemini, DeepSeek, and Grok, through one API key. Register through the dedicated link and contact an administrator to claim **¥7 in free credit**.
+
+### ModelGo
+
+<a href="https://modelgo.ai/?utm_source=ppt-master&amp;utm_medium=sponsorship&amp;utm_content=readme02&amp;campaign_id=ppt-master-github&amp;ad_group_id=readme02"><img src="https://raw.githubusercontent.com/hugohe3/ppt-master/main/docs/assets/sponsors/modelgo.svg" alt="ModelGo" width="150"></a>
+
+Thanks to ModelGo for sponsoring this project! ModelGo is a stable, efficient enterprise-grade AI API aggregation platform. A single API Key gives you access to leading AI models including Claude, OpenAI, Gemini, and DeepSeek, helping developers and businesses build AI applications quickly at lower cost. ModelGo offers an exclusive perk for PPT Master users: get $0.5 in trial credit on sign-up, another $2 after your first API call, and an extra $1 for inviting new users! The platform also offers a tiered spending rebate: the more you use, the more you get back, so you can enjoy AI model calls to the fullest. In addition, ModelGo supports enterprise-grade features such as SLA service guarantees and visual monitoring dashboards, keeping API calls stable and reliable for production deployments. Visit the [ModelGo website](https://modelgo.ai/?utm_source=ppt-master&utm_medium=sponsorship&utm_content=readme02&campaign_id=ppt-master-github&ad_group_id=readme02) to sign up and start building AI efficiently!
 
 ## Infrastructure Support
 
