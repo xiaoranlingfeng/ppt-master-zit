@@ -49,6 +49,7 @@ import re
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+from xml.etree import ElementTree as ET
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -56,7 +57,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from console_encoding import configure_utf8_stdio  # noqa: E402
 from resource_paths import icon_dir_for_svg  # noqa: E402
-from svg_to_pptx.drawingml.utils import parse_project_geometry_length  # noqa: E402
+from svg_to_pptx.drawingml.utils import parse_inline_style, parse_project_geometry_length  # noqa: E402
 
 configure_utf8_stdio()
 
@@ -88,6 +89,8 @@ _ICON_TRANSFORM_RE = re.compile(
     re.ASCII,
 )
 _ICON_STROKE_WIDTH_RE = re.compile(rf'{_NUMBER_PATTERN}(?:px|em|%)?')
+_SVG_ATTR_RE = re.compile(r'''\s+([\w.:-]+)\s*=\s*(["'])(.*?)\2''', re.DOTALL)
+_LOCAL_URL_RE = re.compile(r'''url\(\s*(['"]?)#([^\s)'"\\]+)\1\s*\)''', re.IGNORECASE)
 DEFAULT_ICON_BASE_SIZE = 24
 BaseGeometry = float | tuple[float, float, float, float]
 
@@ -162,8 +165,8 @@ def _detect_icon_style(content: str) -> str:
     """Detect whether an icon is fill-based or stroke-based."""
     # stroke="currentColor" with fill="none" → stroke style (either quote)
     if (
-        re.search(r'stroke\s*=\s*["\']currentColor["\']', content)
-        and re.search(r'fill\s*=\s*["\']none["\']', content)
+        re.search(r'''\sstroke\s*=\s*(["'])\s*currentcolor\s*\1''', content, re.IGNORECASE)
+        and re.search(r'''\sfill\s*=\s*(["'])\s*none\s*\1''', content, re.IGNORECASE)
     ):
         return 'stroke'
     return 'fill'
@@ -178,26 +181,32 @@ def _extract_svg_body(content: str) -> list[str]:
     return [body] if body else []
 
 
-def _extract_shape_elements(content: str, color: str) -> list[str]:
-    """
-    Extract all drawable shape elements from an icon SVG, replacing
-    fill/stroke color references (currentColor or #xxxxxx) with the target color.
-
-    Supports: <path>, <circle>, <rect>, <line>, <polyline>, <polygon>, <ellipse>
-    """
+def _extract_shape_elements(content: str, style: str) -> list[str]:
+    """Extract icon geometry with the paint overrides needed by its style."""
     shape_tags = ('path', 'circle', 'rect', 'line', 'polyline', 'polygon', 'ellipse')
     pattern = r'<(' + '|'.join(shape_tags) + r')(\s[^>]*)?(?:/>|></\1>)'
     matches = re.findall(pattern, content, re.DOTALL)
 
+    # An outline icon's root is fill="none" stroke="currentColor"; an element that
+    # overrides it (fill="currentColor", optionally stroke="none") is a filled
+    # detail and keeps that paint. generate_icon_group resolves currentColor.
+    def inherit_paint(match: re.Match[str]) -> str:
+        name, _, value = match.groups()
+        if name == 'stroke-width':
+            return ''
+        if name in ('fill', 'stroke'):
+            value = value.strip().lower()
+            if value in ('currentcolor', 'none'):
+                if style == 'stroke' and (name, value) in (('fill', 'currentcolor'), ('stroke', 'none')):
+                    return match[0]
+                return ''
+            if re.fullmatch(r'#[0-9a-f]{3,6}', value):
+                return ''
+        return match[0]
+
     elements = []
     for tag, attrs in matches:
-        # Remove standalone fill/stroke color attrs so outer <g> controls color.
-        # Also strip stroke-width so the outer <g> can override it (otherwise the
-        # icon's source stroke-width="2" would shadow any caller-specified value).
-        attrs_clean = re.sub(r'\s*fill="(?:currentColor|#[0-9a-fA-F]{3,6}|none)"', '', attrs)
-        attrs_clean = re.sub(r'\s*stroke="(?:currentColor|#[0-9a-fA-F]{3,6}|none)"', '', attrs_clean)
-        attrs_clean = re.sub(r'\s*stroke-width="[^"]*"', '', attrs_clean)
-        elements.append(f'<{tag}{attrs_clean}/>')
+        elements.append(f'<{tag}{_SVG_ATTR_RE.sub(inherit_paint, attrs)}/>')
 
     return elements
 
@@ -334,7 +343,7 @@ def extract_paths_from_icon(
 
     style = _detect_icon_style(content)
     base_size = _get_viewbox_size(content) or 16
-    elements = _extract_shape_elements(content, target_color)
+    elements = _extract_shape_elements(content, style)
     return elements, style, base_size
 
 
@@ -414,28 +423,73 @@ def resolve_icon_color(attrs: dict[str, str | float], style: str) -> str:
     if style == 'preserve':
         return 'preserve'
 
-    fill = str(attrs.get('fill', '')).strip()
-    stroke = str(attrs.get('stroke', '')).strip()
+    inline = parse_inline_style(str(attrs.get('style', '')))
+    fill = inline.get('fill') or str(attrs.get('fill', '')).strip()
+    stroke = inline.get('stroke') or str(attrs.get('stroke', '')).strip()
     if fill:
         _validate_icon_attr(fill, 'fill', _ICON_COLOR_RE)
     if stroke:
         _validate_icon_attr(stroke, 'stroke', _ICON_COLOR_RE)
 
     if style == 'stroke':
-        if fill and fill != 'none':
-            return fill
-        if stroke and stroke != 'none':
+        if 'stroke' in inline and stroke.lower() != 'none':
             return stroke
-        return '#000000'
+        if fill and fill.lower() != 'none':
+            return fill
+        if stroke and stroke.lower() != 'none':
+            return stroke
+        return inline.get('stroke', '#000000')
 
     if fill:
         return fill
-    if stroke and stroke != 'none':
+    if stroke and stroke.lower() != 'none':
         return stroke
     return '#000000'
 
 
-def generate_icon_group(attrs: dict[str, str | float], elements: list[str], style: str, base_size: BaseGeometry) -> str:
+def collect_svg_ids(content: str) -> set[str]:
+    """Collect document IDs before embedding instance-local icon content."""
+    return {elem_id for elem in ET.fromstring(content).iter() if (elem_id := elem.get('id'))}
+
+
+def _namespace_icon_elements(elements: list[str], used_ids: set[str]) -> list[str]:
+    """Reserve a deterministic instance prefix and rewrite its local references."""
+    content = '\n'.join(elements)
+    try:
+        root = ET.fromstring(f'<g xmlns:xlink="http://www.w3.org/1999/xlink">{content}</g>')
+    except ET.ParseError as exc:
+        raise ValueError('Icon content is not valid SVG; repair the project-local icon XML and retry') from exc
+    local_ids = {elem_id for elem in root.iter() if (elem_id := elem.get('id'))}
+    if not local_ids:
+        return elements
+    instance = 1
+    while any(elem_id.startswith(f'icon-instance-{instance}-') for elem_id in used_ids):
+        instance += 1
+    mapping = {elem_id: f'icon-instance-{instance}-{elem_id}' for elem_id in local_ids}
+    used_ids.update(mapping.values())
+    for elem in root.iter():
+        for name, value in list(elem.attrib.items()):
+            if name == 'id':
+                elem.set(name, mapping[value])
+            elif name.rsplit('}', 1)[-1] == 'href' and value.startswith('#'):
+                if value[1:] in mapping:
+                    elem.set(name, f'#{mapping[value[1:]]}')
+            else:
+                elem.set(name, _LOCAL_URL_RE.sub(
+                    lambda match: f'url({match[1]}#{mapping.get(match[2], match[2])}{match[1]})', value,
+                ))
+    leading_text = [html.escape(root.text, quote=False)] if root.text else []
+    return leading_text + [ET.tostring(child, encoding='unicode') for child in root]
+
+
+def generate_icon_group(
+    attrs: dict[str, str | float],
+    elements: list[str],
+    style: str,
+    base_size: BaseGeometry,
+    *,
+    used_ids: set[str] | None = None,
+) -> str:
     """
     Generate the icon's <g> element.
 
@@ -444,6 +498,7 @@ def generate_icon_group(attrs: dict[str, str | float], elements: list[str], styl
         elements:  List of drawable SVG elements
         style:     'fill', 'stroke', or 'preserve'
         base_size: Icon's natural size, or full viewBox geometry for preserve assets
+        used_ids:  Document IDs, extended with each embedded instance's internal IDs
 
     Returns:
         Complete <g> element string
@@ -473,7 +528,20 @@ def generate_icon_group(attrs: dict[str, str | float], elements: list[str], styl
             f'scale({_format_number(scale_x)}, {_format_number(scale_y)})'
         )
 
-    elements_str = '\n    '.join(elements)
+    if used_ids is None:
+        used_ids = set()
+    if attrs.get('id'):
+        used_ids.add(str(attrs['id']))
+    elements_str = '\n    '.join(_namespace_icon_elements(elements, used_ids))
+    if style == 'stroke' and attrs.get('style'):
+        # A fill supplied as the icon color must not flood the outline's interior.
+        inline = parse_inline_style(str(attrs['style']))
+        if 'fill' in inline:
+            del inline['fill']
+            attrs = attrs.copy()
+            del attrs['style']
+            if inline:
+                attrs['style'] = ';'.join(f'{key}:{value}' for key, value in inline.items())
     context_attrs = ''.join(
         f' {key}="{_xml_attr(value)}"'
         for key, value in attrs.items()
@@ -498,6 +566,13 @@ def generate_icon_group(attrs: dict[str, str | float], elements: list[str], styl
         # pre-change visual output.
         stroke_width = attrs.get('stroke-width', '2')
         color_attrs = f'fill="none" stroke="{_xml_attr(color)}" stroke-width="{_xml_attr(stroke_width)}"'
+
+        def resolve_detail_fill(match: re.Match[str]) -> str:
+            if match[1] == 'fill' and match[3].strip().lower() == 'currentcolor':
+                return f' fill="{_xml_attr(color)}"'
+            return match[0]
+
+        elements_str = _SVG_ATTR_RE.sub(resolve_detail_fill, elements_str)
     else:
         color_attrs = f'fill="{_xml_attr(color)}"'
 
@@ -542,6 +617,7 @@ def process_svg_file(
     
     replaced_count = 0
     new_content = content
+    used_ids = collect_svg_ids(content)
     
     # Replace from back to front to avoid position offset
     for match in reversed(matches):
@@ -579,7 +655,7 @@ def process_svg_file(
                 f'{svg_path.name}: icon has no embeddable shapes: {icon_name}'
             )
         
-        replacement = generate_icon_group(attrs, elements, style, base_size)
+        replacement = generate_icon_group(attrs, elements, style, base_size, used_ids=used_ids)
         
         if verbose or dry_run:
             print(f"  [*] {icon_name}: x={attrs.get('x', 0)}, y={attrs.get('y', 0)}, "

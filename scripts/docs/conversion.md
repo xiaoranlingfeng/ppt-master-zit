@@ -32,6 +32,16 @@ share that directory. Collisions with inputs or other planned outputs gain
 profiles follow the chosen Markdown stem. Separate runs retain the existing
 overwrite behavior for unrelated outputs.
 
+The unified entry also shares planned and completed output names with each web
+conversion in the batch. Repeated page titles gain `_2`, `_3`, etc. before any
+Markdown or companion media is written, matching a direct web-backend batch.
+
+Before conversion, the unified entry and local batch helpers reject a selected
+Markdown target that is the same file as any input, including symbolic and hard
+links. Choose a different `-o` path or remove the output alias first. Existing
+batch renaming still avoids symbolic aliases during path allocation; an own-file
+Markdown/text passthrough remains allowed because it does not rewrite the input.
+
 When present, the conversion profile is metadata only: converter, source path,
 Markdown structure counts, asset directory, image manifest path, and image
 count. Downstream PPT workflows still use Markdown and the image manifest as
@@ -62,6 +72,17 @@ python3 scripts/source_to_md.py https://example.com/article -o article.md
 Useful options:
 - `-t pdf|doc|excel|pptx|web|markdown|text` forces a route when extension
   detection is not enough.
+- Local text conversion and project import share strict UTF-8 / GB18030
+  decoding, with UTF-8 and UTF-16 BOM detection. Undecodable bytes or binary
+  control characters fail instead of producing replacement text; save the
+  source as UTF-8 text and retry.
+- Office literal text is escaped before Markdown structures are composed:
+  XLSX strings and DOCX/PPTX table text retain literal markup, HTML tags, and
+  entities without creating links or image dependencies. DOCX body text shares
+  the same selective backslash escaping: `<` before an ASCII letter, `/`, `!`,
+  or `?`, and `&` starting a named or numeric entity are protected; other `&`,
+  `<`, and `>` remain readable as written. No HTML entities are introduced.
+  Native hyperlinks, footnotes, and equations retain their generated Markdown syntax.
 - `--json` prints a compact machine-readable result after success when the
   output path is known. With multiple inputs, each successful conversion prints
   its own JSON line after that source finishes.
@@ -97,6 +118,25 @@ multi-file inputs, and non-recursive directory inputs.
 ## `source_to_md/pdf_to_md.py`
 
 Recommended first choice for native PDFs.
+
+Embedded image soft masks are combined into PNG alpha, resizing grayscale
+masks to the base image dimensions when necessary. If Pillow is unavailable
+or the image/mask cannot be decoded, `[WARN]` explains how to retry and the
+opaque base image is retained; the rest of the document still converts.
+
+Detected table cells use the page text's character order and spaces, preserving
+decimal punctuation and real line breaks without depending on PyMuPDF's table
+text regrouping. Ruled, partially ruled, and caption/continuation text tables
+share this extraction; merged-cell gaps stay empty rather than repeating values.
+On 90°/270° pages, table detection and character assignment use a temporary
+native page in display coordinates; final table bounds map back to the original
+text coordinates. The source page geometry stays intact. The 0°/180° path is unchanged.
+
+Header/footer filtering classifies text in the page's rotated display coordinates.
+Only text wholly inside the top or bottom 15% band is eligible; repeated noise
+stays specific to its band, and boundary-crossing text remains intact.
+The original display frame is retained for this filtering even if the table
+detector changes the page's crop origin.
 
 ```bash
 python3 scripts/source_to_md/pdf_to_md.py book.pdf
@@ -145,8 +185,23 @@ Native path (no external binary required):
 - `.ipynb` — via `nbconvert`; code-cell output images and Markdown attachments
   use `<output-stem>_files/` with relative Markdown references
 
+Local HTML images resolve against the first `<base href>` (or the source file
+URL). HTML and EPUB image lookup uses the decoded URI path; relocated references
+retain query strings and fragments. HTML/EPUB link targets encode parentheses
+for CommonMark, and DOCX cleanup preserves parenthesis escapes in links and
+literal numbered paragraphs such as `5)` and `9)`. Notebook attachment names
+with shared prefixes are replaced in a single pass, longest name first.
+
 Pandoc fallback (only if you need these):
 - `.doc`, `.odt`, `.rtf`, `.tex`/`.latex`, `.rst`, `.org`, `.typ`
+- Relative includes and resources resolve from the source file's directory,
+  independent of the Markdown output directory. Successful Pandoc diagnostics
+  remain visible on stderr and in the conversion profile; the unified `--json`
+  result also includes `warnings` when the profile records any.
+- Pandoc extracts embedded and referenced images into `<output-stem>_files/`
+  beside the Markdown output and writes relative image references. Nested media
+  paths remain distinct in the image manifest; missing resources retain Pandoc's
+  diagnostic so they can be restored beside the source and converted again.
 - `.odt` uses a temporary copy to expose table header rows, flatten text-box
   paragraphs while retaining inline links, and resolve conditional text from
   its stored `text:is-hidden` state. Diagnostics report these normalizations
@@ -253,6 +308,9 @@ Behavior:
 - reads the `mc:Fallback` of other shape-tree `mc:AlternateContent` it cannot interpret (3D models, ink, zoom), so their preview pictures and text are kept; ChartEx stays reported as unsupported
 - converts PowerPoint tables to Markdown tables; cell-internal line breaks become `<br>` so they cannot break the pipe-table row structure
 - transcribes category charts as category × series tables and scatter/bubble charts as typed X/Y[/size] point tables
+- retains parent-to-leaf paths for multilevel categories; date-axis categories
+  retain their serial values with the date system and cached/axis format noted
+  explicitly. Embedded DOCX charts use this same transcription.
 - preserves every readable chart dimension or series and emits `[Chart data warning: <reason>]` for missing caches/count mismatches; `[Chart data unavailable: <reason>]` is reserved for charts with no readable points (and unsupported ChartEx), so XY data is never flattened into a misleading category table
 - transcribes SmartArt semantic nodes as hierarchical Markdown; unreadable diagram data emits an explicit placeholder and conversion warning
 - exports embedded pictures to a sibling `_files/` directory
@@ -487,7 +545,10 @@ deterministic readable fallback marked
 replacement claim or falls back to a diagnostic object in tolerant mode;
 common solid/no-fill/line/marker forms and scheme colors are normalized for the
 SVG fallback and core payload colors, while native opt-in may still normalize
-unmodeled alpha, line, marker, or no-fill details. Common General, decimal,
+unmodeled alpha, line, marker, or no-fill details. Line-chart null values keep
+their gaps: an isolated value has no connecting segment, while its configured
+marker and data label remain visible and its numeric value stays in the payload.
+Common General, decimal,
 grouped, percent, and simple currency-prefix data-label formats render
 deterministically; an unknown Excel format program keeps the active payload but
 does not claim a normalized fallback. Active types outside the current renderer

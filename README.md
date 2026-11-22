@@ -1,6 +1,6 @@
 # ppt-master + local ComfyUI backend
 
-Official **ppt-master v6.8.0** (MIT, © Hugo He) plus one added image backend: `IMAGE_BACKEND=comfyui`
+Official **ppt-master v6.10.0** (MIT, © Hugo He) plus one added image backend: `IMAGE_BACKEND=comfyui`
 renders on your own ComfyUI — Qwen-Image-2.1 by default (native RGBA), with MOSS-Image SFT and
 Z-Image Turbo selectable per deck. No API key, no per-image cost, nothing leaves the machine.
 
@@ -45,6 +45,6 @@ Upstream ppt-master is MIT. Qwen-Image-2.1 weights ship under the Qwen Research 
 
 ## Upstream
 
-- Repository: https://github.com/hugohe3/ppt-master (v6.8.0)
+- Repository: https://github.com/hugohe3/ppt-master (v6.10.0)
 - The full-featured local fork (interview gate, manifest resume, rendered-output gate) lives at
   `xiaoranlingfeng/ppt-master-zit`, branch `main`.

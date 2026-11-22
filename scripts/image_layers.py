@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""
+PPT Master - Image Layer Tool
+
+Layer helpers for the Image to PPTX profile. `check` tests whether an extracted
+layer (RGBA, or a flat #FF00FF / #00FF00 key) is registered to its source page:
+its visible opaque pixels must match the page at their own position better than
+at any nearby shift; an explicit occlusion mask excludes upper objects.
+`diff-matte` derives a registered layer without a generator by
+keeping the page's own pixels wherever the page differs from a base image that
+had those objects removed. `mono-matte` cuts a single-color graphic (a white logo
+or wordmark) from a flat-key plate by reading its alpha from the channels the key
+lacks, so no key color bleeds into its edges.
+
+Usage:
+    python3 scripts/image_layers.py check <project_path> --page-image <png> --layer <png>
+    python3 scripts/image_layers.py diff-matte <project_path> --page-image <png> --base <png> --out <png>
+    python3 scripts/image_layers.py mono-matte <project_path> --plate <png> --key <HEX> --box X Y W H --out <png>
+
+Examples:
+    python3 scripts/image_layers.py check projects/demo --page-image images/source-pages/01.png \\
+        --layer images/01_plate.png
+    python3 scripts/image_layers.py diff-matte projects/demo --page-image images/source-pages/01.png \\
+        --base images/01_base.png --out images/01_subject.png --ocr analysis/ocr/01.json
+
+Dependencies:
+    Pillow, numpy
+
+See workflows/profiles/image-to-pptx.md for when each command runs and
+scripts/docs/image.md for thresholds and outputs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+from PIL import Image, ImageFilter
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from console_encoding import configure_utf8_stdio  # noqa: E402
+
+CHECK_WIDTH = 640
+SHIFTS = (-10, -5, 0, 5, 10)
+KEYS = ((255, 0, 255), (0, 255, 0))
+
+
+def layer_alpha(image: Image.Image) -> np.ndarray:
+    """Return a boolean opacity mask from real alpha, else from a flat magenta or green key."""
+    rgba = np.asarray(image.convert("RGBA")).astype(int)
+    if (rgba[..., 3] < 20).any():
+        return rgba[..., 3] > 200
+    for key in KEYS:
+        keyed = np.all(np.abs(rgba[..., :3] - np.array(key)) < 60, axis=2)
+        if keyed.mean() > 0.05:
+            return ~keyed
+    return np.ones(rgba.shape[:2], bool)
+
+
+def _resampled_occlusion_mask(image: Image.Image, size: tuple[int, int]) -> np.ndarray:
+    mask = np.asarray(image.convert("L")) != 0
+    if image.size == size:
+        return mask
+    # A BICUBIC output pixel can contain any source pixel in its two-pixel
+    # kernel support, widened by the scale when downsampling. Do not lose thin
+    # occluders or their resampling fringe by sampling the mask with NEAREST.
+    bounds = []
+    for source_length, target_length in zip(image.size, size):
+        scale = source_length / target_length
+        centers = (np.arange(target_length) + 0.5) * scale
+        support = 2 * max(scale, 1.0)
+        start = np.clip((centers - support + 0.5).astype(int), 0, source_length)
+        end = np.clip((centers + support + 0.5).astype(int), 0, source_length)
+        bounds.append((start, end))
+    integral = np.pad(mask, ((1, 0), (1, 0))).cumsum(axis=0, dtype=np.int64)
+    np.cumsum(integral, axis=1, out=integral)
+    x0, x1 = bounds[0]
+    y0, y1 = (indices[:, None] for indices in bounds[1])
+    return integral[y1, x1] - integral[y0, x1] - integral[y1, x0] + integral[y0, x0] > 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    project = Path(args.project_path).resolve()
+    page = Image.open(project / args.page_image).convert("RGB")
+    layer = Image.open(project / args.layer)
+    height = round(CHECK_WIDTH * page.size[1] / page.size[0])
+    src = np.asarray(page.resize((CHECK_WIDTH, height)), float)
+    resized = layer.resize((CHECK_WIDTH, height))
+    rgb = np.asarray(resized.convert("RGB"), float)
+    alpha = layer_alpha(resized)
+    if not alpha.any():
+        print("Layer has no opaque pixels.", file=sys.stderr)
+        return 1
+    occluded = np.zeros(alpha.shape, bool)
+    if args.occlusion_mask:
+        with Image.open(project / args.occlusion_mask) as mask_image:
+            if mask_image.size != page.size:
+                print("Occlusion mask must match the page dimensions; recreate it on the canonical page canvas.",
+                      file=sys.stderr)
+                return 1
+            occluded = _resampled_occlusion_mask(mask_image, resized.size)
+        alpha &= ~occluded
+        if not alpha.any():
+            print("Layer has no visible opaque pixels; mark only actual upper objects in --occlusion-mask.",
+                  file=sys.stderr)
+            return 1
+    diffs = {}
+    for dx in SHIFTS:
+        for dy in SHIFTS:
+            mask = np.roll(np.roll(alpha, dx, 1), dy, 0) & ~occluded
+            moved = np.roll(np.roll(rgb, dx, 1), dy, 0)
+            diffs[(dx, dy)] = float(np.abs(moved[mask] - src[mask]).mean()) if mask.any() else float("inf")
+    origin = diffs[(0, 0)]
+    nearest = min(value for shift, value in diffs.items() if shift != (0, 0))
+    if not np.isfinite(nearest):
+        print("No visible pixels remain for shifted comparisons; review --occlusion-mask against the page.",
+              file=sys.stderr)
+        return 1
+    best = min(diffs, key=diffs.get)
+    registered = origin <= args.ratio * nearest
+    scale = page.size[0] / CHECK_WIDTH
+    print(f"{args.layer}: diff at origin {origin:.1f}, best shifted {nearest:.1f}, "
+          f"best offset ({best[0] * scale:+.0f}, {best[1] * scale:+.0f}) page px")
+    print("Registered" if registered else "NOT registered")
+    if not registered:
+        print("Check the layer's position and appearance; for parts hidden by upper objects, "
+              "supply a page-sized --occlusion-mask marking those objects.", file=sys.stderr)
+    return 0 if registered else 3
+
+
+def text_mask(ocr_path: Path, size: tuple[int, int], pad: float) -> np.ndarray:
+    data = json.loads(ocr_path.read_text(encoding="utf-8"))
+    scale = size[0] / data["canvas"][0]
+    mask = np.zeros((size[1], size[0]), bool)
+    for block in data["blocks"]:
+        if block.get("skip"):
+            continue
+        for line in block["lines"]:
+            x0 = max(int((line["x"] - pad) * scale), 0)
+            y0 = max(int((line["y"] - pad) * scale), 0)
+            x1 = int((line["x"] + line["w"] + pad) * scale)
+            y1 = int((line["y"] + line["h"] + pad) * scale)
+            mask[y0:y1, x0:x1] = True
+    return mask
+
+
+def cmd_diff_matte(args: argparse.Namespace) -> int:
+    project = Path(args.project_path).resolve()
+    page = Image.open(project / args.page_image).convert("RGB")
+    base = Image.open(project / args.base).convert("RGB").resize(page.size, Image.LANCZOS)
+    distance = np.sqrt(((np.asarray(page, float) - np.asarray(base, float)) ** 2).sum(axis=2))
+    keep = distance > args.threshold
+    if args.ocr:
+        keep &= ~text_mask(project / args.ocr, page.size, 6)
+    mask = Image.fromarray((keep * 255).astype("uint8"))
+    mask = mask.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(0.8))
+    rgba = np.asarray(page.convert("RGBA")).copy()
+    rgba[..., 3] = np.asarray(mask)
+    out = project / args.out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(rgba).save(out)
+    print(f"{out.relative_to(project)}: {np.asarray(mask).astype(bool).mean() * 100:.1f}% of the page kept "
+          f"from source pixels at {page.size[0]}x{page.size[1]}")
+    return 0
+
+
+def parse_hex(value: str) -> tuple[int, int, int]:
+    text = value.lstrip("#")
+    if len(text) != 6:
+        raise argparse.ArgumentTypeError("use a six-digit hex color such as #FF00FF")
+    return tuple(int(text[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def cmd_mono_matte(args: argparse.Namespace) -> int:
+    project = Path(args.project_path).resolve()
+    plate = Image.open(project / args.plate).convert("RGB")
+    absent = [index for index, value in enumerate(args.key) if value < 128]
+    if not absent:
+        print("Key #%02X%02X%02X lacks no channel; use a key with at least one channel below 128." % args.key, file=sys.stderr)
+        return 1
+    scale = plate.size[0] / args.canvas_width
+    x, y, w, h = args.box
+    box = (round(x * scale), round(y * scale), round((x + w) * scale), round((y + h) * scale))
+    crop = np.asarray(plate.crop(box)).astype(float)
+    key_levels = np.asarray(args.key)[absent]
+    signal = np.maximum(crop[..., absent] - key_levels, 0).min(axis=2)
+    level = np.percentile(signal, 99) or 255.0
+    alpha = np.clip(signal / level * 255, 0, 255).astype("uint8")
+    rgba = np.dstack([np.full(alpha.shape, channel, "uint8") for channel in args.fill] + [alpha])
+    out = project / args.out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(rgba, "RGBA").save(out)
+    print(f"{out.relative_to(project)}: {alpha.shape[1]}x{alpha.shape[0]} px, place at canvas x={x:g} y={y:g} "
+          f"width={w:g} height={h:g}; alpha from channel(s) {', '.join('RGB'[i] for i in absent)}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Check layer registration and derive registered layers for Image to PPTX.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    check = sub.add_parser("check", help="Exit 0 when a layer is registered to its page, 3 when not.")
+    check.add_argument("project_path")
+    check.add_argument("--page-image", required=True, help="Canonical page image, relative to the project.")
+    check.add_argument("--layer", required=True, help="Extracted layer (RGBA or flat magenta/green key).")
+    check.add_argument("--occlusion-mask",
+                       help="Page-sized grayscale mask: nonzero pixels mark upper objects hiding the layer.")
+    check.add_argument("--ratio", type=float, default=0.8,
+                       help="Origin difference must be at most this fraction of the best shifted one (default 0.8).")
+    check.set_defaults(func=cmd_check)
+
+    matte = sub.add_parser("diff-matte", help="Keep page pixels where the page differs from an object-removed base.")
+    matte.add_argument("project_path")
+    matte.add_argument("--page-image", required=True, help="Canonical page image, relative to the project.")
+    matte.add_argument("--base", required=True, help="Base image with the objects removed.")
+    matte.add_argument("--out", required=True, help="Output RGBA layer, relative to the project.")
+    matte.add_argument("--ocr", help="Reviewed analysis/ocr/<page>.json; its text boxes are excluded.")
+    matte.add_argument("--threshold", type=float, default=60.0,
+                       help="RGB distance above which a pixel belongs to the layer (default 60).")
+    matte.set_defaults(func=cmd_diff_matte)
+    mono = sub.add_parser("mono-matte", help="Cut a single-color graphic from a flat-key plate by its key-free channels.")
+    mono.add_argument("project_path")
+    mono.add_argument("--plate", required=True, help="Raw flat-key plate (before keying), relative to the project.")
+    mono.add_argument("--key", required=True, type=parse_hex, help="The plate's key color, e.g. #FF00FF.")
+    mono.add_argument("--box", required=True, type=float, nargs=4, metavar=("X", "Y", "W", "H"),
+                      help="Graphic box in canvas px.")
+    mono.add_argument("--fill", type=parse_hex, default=(255, 255, 255), help="Graphic color (default #FFFFFF).")
+    mono.add_argument("--canvas-width", type=float, default=1280, help="Canvas width in px (default 1280).")
+    mono.add_argument("--out", required=True, help="Output RGBA crop, relative to the project.")
+    mono.set_defaults(func=cmd_mono_matte)
+    return parser
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    configure_utf8_stdio()
+    args = build_parser().parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -14,6 +14,8 @@ Status enum: [`svg-image-embedding.md`](svg-image-embedding.md). Per non-skipped
 |---|---|---|---|---|---|---|---|
 | `<planned file>` | `<planned size>` | `<planned role>` | `<owner-resolved recommendation>` | `adaptive` / `no-crop` | `ai` / `web` / `slice` | Pending | `<acquisition brief>` |
 
+Name an opaque `ai` image `.jpg`; a row that needs alpha or a key — an illustration sheet and its slices, a keyed plate, a transparent layer — stays `.png`.
+
 Classify `Reference: Derived from <canonical bare filename>; treatment=<operation>; …` before `Acquire Via`: the parent must be a distinct non-derived `user`, `web`, `ai`, or `slice` row (no placeholder parents, chains, cycles, or self-reference). Then for each Pending row:
 
 | Row kind / Acquire Via | Load | Run | Success status |
@@ -27,7 +29,7 @@ Classify `Reference: Derived from <canonical bare filename>; treatment=<operatio
 
 An all-`web` deck never reads `image-generator.md`, and vice versa.
 
-**Mandatory — consume the resolved treatment path**: this phase never adds or reselects a treatment. `none` uses the canonical bitmap; `native` creates no file (SVG owns crop/clip, transform, opacity, frame/shadow/scrim/vignette, overlap); `prepared derivative` is a separate file only for pixel blur, desaturation/grayscale, duotone, brightness/contrast, downscaling to the planned on-slide size (`image_treat.py --fit WxH`, never upscaling), or existing cutout/registered-layer preparation. Never bake a native treatment into a derivative.
+**Mandatory — consume the resolved treatment path**: this phase never adds or reselects a treatment. `none` uses the canonical bitmap; `native` creates no file (SVG owns crop/clip, transform, opacity, frame/shadow/scrim/vignette, overlap); `prepared derivative` is a separate file only for pixel blur, desaturation/grayscale, duotone, brightness/contrast, downscaling to the planned on-slide size (`image_treat.py --fit WxH`, never upscaling; for a cropped placement `WxH` is the uncropped image scaled to cover the slot, not the slot), or existing cutout/registered-layer preparation. Never bake a native treatment into a derivative.
 
 **Reference — pattern → preparation (an adopted id creates nothing by itself)**: `P*` / `M*` / `C*` use existing assets with native composition; `A1-02` / `A1-03` → `image_treat.py` blur / duotone; `A1-01` / `A1-04` → an existing composite or the host/AI path (`image_treat.py` does not blend); `A2-01` → an existing RGBA or flat-key AI/slice asset (with `A2-02` / `A2-03` + §4.4 when scene registration is required); `A2-02` / `A2-03` → §4.4 registered layers; `A2-04` → an existing transparent frame/device asset plus a content picture registered beneath it; `A3-01` → original/subject plus a registered `image_treat.py` derivative; `A3-02` → a registered full-canvas blur derivative with native crop panels; `A3-03` → a desaturated base plus an existing/§4.4 color subject layer.
 

@@ -126,7 +126,7 @@ A sheet generates compatible transparent **illustration**, **illustrated-icon**,
 **Sheet prompt convention** — one `page_role: local` item with `image_size` from final placement; spot sheets `text_policy: none`, lettering sheets `embedded`:
 
 - **Grid**: derive `aspect_ratio` and `--grid` from the target shape, not a universal square grid. State an invisible logical **R×C grid** and the cell shape (compact square object, tall portrait, wide vignette, wide lettering mark); center each element in about 65% of its cell and keep at least 10% key-only margin on every side — tips, steam, particles, and effects included — so `slice_images.py --strict-alpha` never meets content on a cell edge. Never draw cells, panels, dividers, borders, frames, or alternate gutter colors; never shrink every subject into a square sticker.
-- **Key**: one flat chroma key across the sheet — pure `#00FF00`, `#0000FF`, or `#FF0000`, chosen so its hue is absent from every element and effect (a pure key despills and recovers soft alpha; an opaque element of the key's hue keeps its color, but thin dark strokes of that hue still fringe) — stated as exact HEX before the palette and the subjects (deck colors appear only inside elements), unchanged in every gutter, free of reflections or spill; grain, halftone, and vignette stay inside elements. The key is technical, not deck palette. Every pixel that is not an element is the key itself — no white card, panel, paper, mat, or frame under an element and no second tint of the key; state the key rule first in the prompt and repeat it last, because a model told only "no borders" still paints each element on a white card.
+- **Key**: one flat chroma key across the sheet — pure `#00FF00`, `#0000FF`, or `#FF0000`, chosen so its hue is absent from every element and effect (a pure key despills and recovers soft alpha; an opaque element of the key's hue keeps its color, but thin dark strokes of that hue still fringe; when the elements together carry all three hues — a near hue counts, as orange keys out on red — split them into sheets that each have an absent key instead of recoloring an element or keying on another color, which fringes) — stated as exact HEX before the palette and the subjects (deck colors appear only inside elements), unchanged in every gutter, free of reflections or spill; grain, halftone, and vignette stay inside elements. The key is technical, not deck palette. Every pixel that is not an element is the key itself — no white card, panel, paper, mat, or frame under an element and no second tint of the key; state the key rule first in the prompt and repeat it last, because a model told only "no borders" still paints each element on a white card.
 - **Identity**: shared `deck_rendering` + `color_scheme`.
 - **Illustration / illustrated-icon sheet**: name each element and its page or reuse job; for an icon, the compact cue that must survive at placement size; the §5.3 `none` cue.
 - **Lettering sheet**: exactly one named stable string per cell as the only text, quoted literally; the group's letterform character and treatment, then role, placement/background relationship, relative weight, and energy under §5.3's controlled-authorship default; artistry glyph-bound (silhouette, stroke structure, material, texture, depth, contour-bound light). No topic motifs, scene fragments, icons, detached ribbons, or particles unless the approved treatment is a lettering-plus-illustration lockup; key-only padding, no scene, unrelated copy, labels, watermark, or mockup surface. A single mark on a wide sheet (3:2 or wider) tends to come back with a faded ghost copy of itself above or below the real mark — give a lone mark a narrow band (about 4:1) that leaves no room for a second line, and inspect every lettering slice for a ghost band, not only for the characters.
@@ -184,7 +184,7 @@ Use when a person, product, creature, effect, or scene element must cross native
 
 **Mandatory — preserve registration**: derive every full-canvas member independently from the same canonical source, keeping canvas dimensions, pose, scale, position, lighting, and style; never trim or crop a registered output; record the shared source and group in the owning rows.
 
-**Image to PPTX (Codex required)**: follow its §3 per-region decision — a complete, separable, resolution-sufficient region may stay source-derived, otherwise use Codex's native reference-image capability. Inspect every member and the recomposition. Do not adapt `image_gen.py` or its backends for that profile; other hosts unsupported.
+**Image to PPTX**: follow its §3 per-region decision — a complete, separable, resolution-sufficient region may stay source-derived, otherwise use the profile's reference-image path (host-native editing or `image_gen.py --reference-image`). Inspect every member and the recomposition.
 
 **Procedure**:
 
@@ -192,7 +192,7 @@ Use when a person, product, creature, effect, or scene element must cross native
 2. Prepare the subject/foreground as an exact source-derived layer or a reference reconstruction, never from a generated base or layer.
 3. Prefer one shared plate when objects do not overlap and share an isolation treatment, with padded bboxes (shadows and effects included) pairwise disjoint.
 4. A registered plate keeps original positions with one nested-SVG crop per recorded bbox ([`svg-effects.md`](./svg-effects.md) §6.5); a rearranged regular-cell plate is sliced under §4.3 and each asset placed at its recorded bbox.
-5. Prefer direct RGBA, otherwise one exact flat key over the whole layer and one `1x1` `--alpha` slice without `--trim` so coordinates hold — never one keyed image per object.
+5. Prefer direct RGBA, otherwise one exact flat key over the whole layer and one `1x1` `--alpha` slice without `--trim` so coordinates hold — never one keyed image per object. Choose the key as for sheets (§4.3) — a pure `#00FF00`, `#0000FF`, or `#FF0000` whose hue is absent from the objects; when every pure hue appears in them (purple, pink, or multicolor art), use `#FF00FF`, which the slicer cannot despill but whose spill reads as the objects' own hue. Cut a single-color graphic on the plate (white logo, wordmark) from the raw plate with `python3 scripts/image_layers.py mono-matte` instead of keying it.
 6. Save under `<project>/images/`, registered full-canvas members `no-crop`.
 
 Overlapping or differently ordered objects take separate layers. A shared output is valid only when every final object still becomes an independent picture.
@@ -203,9 +203,11 @@ Outside Image to PPTX, Path A uses single-image edit mode and Path B the host to
 
 ```bash
 python3 scripts/image_gen.py "Remove the planned foreground subjects and reconstruct the hidden background; preserve the exact canvas" \
-  --reference-image <project>/images/<source>.png -o <project>/images -f <group>_base
+  --reference-image <project>/images/<source>.png --aspect_ratio <source W:H> --image_size <tier> \
+  -o <project>/images -f <group>_base
 python3 scripts/image_gen.py "Isolate the planned non-overlapping foreground objects at their exact original positions on one flat #00FF00 plate" \
-  --reference-image <project>/images/<source>.png -o <project>/images -f <group>_plate_key
+  --reference-image <project>/images/<source>.png --aspect_ratio <source W:H> --image_size <tier> \
+  -o <project>/images -f <group>_plate_key
 python3 scripts/slice_images.py <project>/images/<group>_plate_key.png --grid 1x1 \
   --names <group>_plate --alpha --bg "#00FF00"
 ```
@@ -214,7 +216,7 @@ python3 scripts/slice_images.py <project>/images/<group>_plate_key.png --grid 1x
 
 ### 4.5 Local ComfyUI backend (`comfyui`)
 
-Set `IMAGE_BACKEND=comfyui`. Images are generated by a local ComfyUI workflow chosen with `COMFY_MODEL` — `qwen` (Qwen-Image-2.1, default, native RGBA, steps 25 / cfg 1 / euler / simple), `moss` (MOSS-Image SFT, opaque, 50 / 3 / euler / sgm_uniform), or `zit` (Z-Image Turbo, opaque, 8 / 1 / res_multistep). `COMFY_WORKFLOW` points at any other API-format workflow. The backend auto-starts ComfyUI when `127.0.0.1:8188` is down (`COMFY_AUTOSTART=0` disables, `COMFY_OPEN_BROWSER=0` keeps it headless), computes width/height from `aspect_ratio × image_size`, and picks a fresh seed per run.
+Set `IMAGE_BACKEND=comfyui`. Images are generated by a local ComfyUI workflow chosen with `COMFY_MODEL` — `qwen` (Qwen-Image-2.1, default, native RGBA, 25 / cfg 1 / euler / simple), `moss` (MOSS-Image SFT, opaque, 50 / 3 / euler / sgm_uniform), or `zit` (Z-Image Turbo, opaque, 8 / 1 / res_multistep). `COMFY_WORKFLOW` points at any other API-format workflow. The backend auto-starts ComfyUI when `127.0.0.1:8188` is down, computes width/height from `aspect_ratio × image_size`, and picks a fresh seed per run.
 
 | `COMFY_MODEL` | Model | Template | Sampler | Alpha |
 |---|---|---|---|---|
@@ -222,13 +224,12 @@ Set `IMAGE_BACKEND=comfyui`. Images are generated by a local ComfyUI workflow ch
 | `moss` | MOSS-Image SFT | `moss_image_sft_api.json` | 50 / cfg 3 / euler / sgm_uniform / shift 5 | opaque |
 | `zit` | Z-Image Turbo | `zit_basic_api.json` | 8 / cfg 1 / res_multistep / simple / shift 3 | opaque |
 
-**Sampler overrides are global**: `COMFY_STEPS` / `COMFY_CFG` / `COMFY_SAMPLER` / `COMFY_SCHEDULER` / `COMFY_SHIFT` beat every template, so clear them when switching models.
+`COMFY_STEPS` / `COMFY_CFG` / `COMFY_SAMPLER` / `COMFY_SCHEDULER` / `COMFY_SHIFT` are global and beat every template — clear them when switching models. Use `1K` up to 1280 px rendered width (a 1280×720 deck is all `1K`); `1K → 2K` is roughly 5× wall time.
 
-**Size tier**: `1K` for ≤1280 px rendered width (a 1280×720 deck is all `1K`), `2K` for 1280–2560, `4K` above. On this class of GPU `1K → 2K` is ~5× wall time.
-
-**Prompting**: the full recipe lives in [`qwen-image-2-1-prompting.md`](qwen-image-2-1-prompting.md) with five skeletons in [`../templates/qwen_prompt_skeletons.md`](../templates/qwen_prompt_skeletons.md). For RGBA assets wrap the description as `This is an RGBA format image with transparency.` → description → `The image has an alpha channel and a transparent background.`; keep the description 1–4 natural-language sentences and always append 「画面中不出现任何文字、字母、数字或水印」. At cfg 1 the negative prompt is inert — put every constraint in the positive prompt. MOSS prompts come from the sibling `moss-image-prompt-enhancer` skill.
+Prompting: the recipe lives in [`qwen-image-2-1-prompting.md`](qwen-image-2-1-prompting.md) with five skeletons in [`../templates/qwen_prompt_skeletons.md`](../templates/qwen_prompt_skeletons.md). For RGBA assets wrap the description as `This is an RGBA format image with transparency.` → description → `The image has an alpha channel and a transparent background.`, keep the description 1–4 natural-language sentences, and always append 「画面中不出现任何文字、字母、数字或水印」. At cfg 1 the negative prompt is inert, so every constraint belongs in the positive prompt. MOSS prompts come from the sibling `moss-image-prompt-enhancer` skill.
 
 ---
+
 ## 5. Global Hard Rules
 
 Append these to every assembled prompt.
@@ -295,7 +296,7 @@ Write `project/images/image_prompts.json`:
   },
   "items": [
     {
-      "filename": "cover_bg.png",
+      "filename": "cover_bg.jpg",
       "purpose": "Cover background (Slide 01)",
       "page_role": "hero_page",
       "text_policy": "none",
@@ -306,7 +307,7 @@ Write `project/images/image_prompts.json`:
       "status": "Pending"
     },
     {
-      "filename": "framework_p05.png",
+      "filename": "framework_p05.jpg",
       "purpose": "Methodology framework (Slide 05)",
       "type": "framework",
       "page_role": "local",
@@ -329,7 +330,7 @@ Write `project/images/image_prompts.json`:
 | `items[].text_policy` | yes | `none` or `embedded`, judged per image (§5.3) |
 | `items[].aspect_ratio` | yes | The target shape as any positive `W:H` (e.g. `16:9`, `4:1`, `1.85:1`), derived from the placement, never narrowed to a backend. The backend outputs the nearest size its model allows and the manifest keeps this value; Executor fits the actual image through the crop policy, and a sheet is sliced from its actual size |
 | `items[].prompt` | yes | The assembled paragraph |
-| `items[].image_size` | no | `512px` / `1K` / `2K` / `4K` |
+| `items[].image_size` | no | `512px` / `1K` / `2K` / `4K` — a pixel tier (long edge about 1024 / 2048 / 4096 px), not an exact size: the smallest tier whose long edge covers 1.5–2× the planned display long edge, so a full-bleed 1280 px hero takes `2K`; the backend sets the exact pixels |
 | `items[].model` | no | Per-item backend model override |
 | `items[].alt_text` | no | Short caption |
 | `items[].slice_grid`, `items[].slice_names` | for a placeable-element sheet | Exact `RxC` and the comma-separated basenames (`rows*cols` unique outputs) for `slice_images.py`; slice basenames are unique across the manifest, so re-cutting part of a sheet rewrites the parent's `slice_names` (and grid) rather than adding a second item with the same names |
@@ -369,7 +370,7 @@ Prerequisite: §3 complete and `images/image_prompts.json` validates. The manife
 python3 scripts/image_gen.py --manifest project/images/image_prompts.json --output project/images
 ```
 
-Validates the file behind every `Generated` row before skipping it, iterates retryable rows with bounded concurrency, and writes each status atomically. Interrupting is safe (completed items stay `Generated`), and `--render-md` refreshes the Markdown sidecar after an interruption. Backend selection, `.env` lookup order, provider keys, and the OpenAI-compatible knobs: [`image.md`](../scripts/docs/image.md). The single-image form `image_gen.py "prompt" --filename …` remains for ad-hoc re-rolls. Backends return their own native resolutions: backfill the actual pixels into `Dimensions`, and when a file is far larger than its planned on-slide size, downscale it to that size as a prepared derivative (`image_treat.py --fit WxH`); never upscale.
+Validates the file behind every `Generated` row before skipping it, iterates retryable rows with bounded concurrency, and writes each status atomically. Interrupting is safe (completed items stay `Generated`), and `--render-md` refreshes the Markdown sidecar after an interruption. Backend selection, `.env` lookup order, provider keys, and the OpenAI-compatible knobs: [`image.md`](../scripts/docs/image.md). The single-image form `image_gen.py "prompt" --filename …` remains for ad-hoc re-rolls. Backends return their own native resolutions: backfill the actual pixels into `Dimensions`; never upscale. Extra source pixels are not a reason for a prepared derivative — export sizes delivered media (`svg_to_pptx.py --image-sizing`).
 
 ### Path B — host-native image tool
 
@@ -435,7 +436,7 @@ Do not ask and do not enter Offline Manual. Retain the filename, attempted path,
 | Subject vague | Abstract Reference | Concrete nouns (verbs + objects) |
 | Human depiction off-style | §5.2 cues diluted | Restate the rendering's facial detail, anatomy, texture, realism |
 
-**Variant workflow**: set the item's `status` back to `Pending`, update its `prompt` in place, rerun the same resolved path (Path A reprocesses only that item; Path B regenerates it; Manual re-renders the sidecar). For several stylistic tries append items with distinct filenames (`cover_bg_v2.png`).
+**Variant workflow**: set the item's `status` back to `Pending`, update its `prompt` in place, rerun the same resolved path (Path A reprocesses only that item; Path B regenerates it; Manual re-renders the sidecar). For several stylistic tries append items with distinct filenames (`cover_bg_v2.jpg`).
 
 ---
 

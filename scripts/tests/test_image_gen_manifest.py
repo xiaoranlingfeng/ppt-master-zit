@@ -8,7 +8,9 @@ import io
 import json
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,6 +51,41 @@ class ManifestOutputNameTests(unittest.TestCase):
                     Image.open(Path(tmp) / "hero.v2.png") as second:
                 self.assertEqual(first.getpixel((0, 0)), (255, 0, 0))
                 self.assertEqual(second.getpixel((0, 0)), (0, 0, 255))
+
+
+class ManifestInterruptTests(unittest.TestCase):
+    def test_in_flight_success_is_persisted_when_the_main_thread_is_interrupted(self) -> None:
+        from PIL import Image
+
+        def generate(**kwargs: object) -> str:
+            time.sleep(0.2)
+            path = backend_common.resolve_output_path(
+                str(kwargs["prompt"]), str(kwargs["output_dir"]), str(kwargs["filename"])
+            )
+            Image.new("RGB", (8, 8), "red").save(path, format="PNG")
+            return path
+
+        def interrupted(*args: object, **kwargs: object):
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "image_prompts.json"
+            items = [
+                {"filename": name, "prompt": "red", "aspect_ratio": "1:1", "status": "Pending",
+                 "page_role": "local", "text_policy": "none"}
+                for name in ("a.png", "b.png")
+            ]
+            manifest_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+            manifest = image_gen.load_manifest(str(manifest_path))
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
+                    mock.patch("concurrent.futures.as_completed", interrupted), \
+                    self.assertRaises(KeyboardInterrupt):
+                image_gen._run_manifest(
+                    manifest, str(manifest_path), SimpleNamespace(generate=generate),
+                    initial_concurrency=2, image_size="1K", output_dir=tmp, model=None,
+                )
+            saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual([item["status"] for item in saved["items"]], ["Generated", "Generated"])
 
 
 
@@ -144,3 +181,56 @@ class ManifestRetryAfterTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as stopped:
                     image_gen.main()
             self.assertEqual(stopped.exception.code, 1)
+
+
+class ManifestRateLimitOwnershipTests(unittest.TestCase):
+    def _always_rate_limited(self, calls: list[str]):
+        def request(api_key: str, prompt: str, *args: object) -> str:
+            calls.append(prompt)
+            raise backend_common.http_error(
+                SimpleNamespace(status_code=429, text="rate limit", headers={}),
+                "OpenAI image generation",
+            )
+        return request
+
+    def test_manifest_backends_hand_rate_limits_to_the_runner(self) -> None:
+        from image_backends import backend_openai
+
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "image_prompts.json"
+            items = [
+                {"filename": name, "prompt": name, "aspect_ratio": "1:1", "status": "Pending",
+                 "page_role": "local", "text_policy": "none"}
+                for name in ("a.png", "b.png", "c.png")
+            ]
+            manifest_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+            manifest = image_gen.load_manifest(str(manifest_path))
+            with mock.patch.dict("os.environ", {"OPENAI_API_KEY": "test"}), \
+                    mock.patch.object(backend_openai, "_generate_image", self._always_rate_limited(calls)), \
+                    mock.patch("time.sleep") as sleep, \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                image_gen._run_manifest(
+                    manifest, str(manifest_path), backend_openai,
+                    initial_concurrency=3, image_size="1K", output_dir=tmp, model=None,
+                )
+            # One request per item, then one serial request that stops the run.
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(sleep.call_args_list, [mock.call(10)])
+            self.assertEqual(
+                sorted(item["status"] for item in manifest["items"]),
+                ["Failed", "Pending", "Pending"],
+            )
+
+    def test_single_image_mode_keeps_backend_rate_limit_retries(self) -> None:
+        from image_backends import backend_openai
+
+        calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict("os.environ", {"OPENAI_API_KEY": "test"}), \
+                mock.patch.object(backend_openai, "_generate_image", self._always_rate_limited(calls)), \
+                mock.patch.object(backend_openai.time, "sleep"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError):
+                backend_openai.generate("p", output_dir=tmp, filename="x")
+        self.assertEqual(len(calls), backend_common.MAX_RETRIES + 1)
