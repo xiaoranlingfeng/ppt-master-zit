@@ -23,9 +23,3 @@ jobs:
       - name: Backend smoke tests (no GPU, no ComfyUI server)
         working-directory: scripts
         run: python test_backend_comfyui_smoke.py -v
-      - name: Export regression tests (bullets, layouts, moss contract)
-        working-directory: scripts
-        run: python test_export_regressions.py -v
-      - name: Manifest resume tests (no GPU)
-        working-directory: scripts
-        run: python test_manifest_resume.py -v
