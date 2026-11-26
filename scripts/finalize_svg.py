@@ -36,10 +36,12 @@ Processing options:
 """
 
 import argparse
+import concurrent.futures
 import os
 import shutil
 import sys
 import tempfile
+import threading
 from enum import Enum
 from pathlib import Path
 from typing import TextIO
@@ -54,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from resource_paths import icon_dir_for_project  # noqa: E402
 from svg_finalize.align_embed_images import (
     align_and_embed_images_in_svg,
+    align_and_embed_images_in_svg_with_stats,
     count_office_vector_refs_in_svg,
 )
 from svg_finalize.embed_icons import process_svg_file as embed_icons_in_file
@@ -184,9 +187,12 @@ def _process_candidate_directory(
     icons_dir: Path,
 ) -> bool:
     """Run every selected finalization pass against one unpublished candidate."""
+    svg_files = sorted(candidate_dir.glob('*.svg'))
+    worker_count = min(len(svg_files), max(1, os.cpu_count() or 2), 6)
+
     # Core normalization: downstream image/rect processors read XML geometry.
     geometry_count = 0
-    for svg_file in candidate_dir.glob('*.svg'):
+    for svg_file in svg_files:
         try:
             geometry_count += materialize_inline_geometry_in_file(svg_file)
         except (OSError, ET.ParseError, GeometryStyleError) as exc:
@@ -200,15 +206,19 @@ def _process_candidate_directory(
         if not quiet:
             safe_print("[1/3] Expanding icons + local use references...")
         icons_count = 0
-        for svg_file in candidate_dir.glob('*.svg'):
+        icon_touched_files: list[Path] = []
+        for svg_file in svg_files:
             count = embed_icons_in_file(
                 svg_file,
                 icons_dir,
                 dry_run=False,
                 verbose=False,
             )
-            icons_count += count
-        for svg_file in candidate_dir.glob('*.svg'):
+            if count > 0:
+                icons_count += count
+                icon_touched_files.append(svg_file)
+        # 仅对实际嵌入了图标的文件重跑内联几何展开，避免无图标页面重复解析 XML
+        for svg_file in icon_touched_files:
             try:
                 geometry_count += materialize_inline_geometry_in_file(svg_file)
             except (OSError, ET.ParseError, GeometryStyleError) as exc:
@@ -218,7 +228,7 @@ def _process_candidate_directory(
                 )
                 return False
         local_use_count = 0
-        for svg_file in candidate_dir.glob('*.svg'):
+        for svg_file in svg_files:
             try:
                 local_use_count += expand_local_use_references_in_file(svg_file)
             except (OSError, ET.ParseError, UseExpansionError) as exc:
@@ -242,29 +252,46 @@ def _process_candidate_directory(
         )
 
     # Step 2: Align (slice/meet) and Base64-embed all <image> in one pass.
-    # Replaces the former crop-images / fix-aspect / embed-images trio: the
-    # spatial transform (slice → crop, meet → fit-box) and the asset embed
-    # are mutually exclusive branches per image, sequenced together so each
-    # SVG is only parsed and serialized once and each bitmap is only read
-    # from disk once.
+    # 同批次共享图像编码缓存并在多页场景下并行执行（Pillow 缩放/PNG 压缩会释放 GIL）。
     if options.get('align_images'):
         if not quiet:
             safe_print("[2/3] Aligning + embedding images...")
         img_count = 0
         img_errors = 0
         office_vector_count = 0
-        for svg_file in candidate_dir.glob('*.svg'):
-            office_vector_count += count_office_vector_refs_in_svg(svg_file)
-            count, errs = align_and_embed_images_in_svg(
+        encode_cache: dict = {}
+        cache_lock = threading.Lock()
+
+        def _align_one(svg_file: Path) -> tuple[int, int, int]:
+            return align_and_embed_images_in_svg_with_stats(
                 svg_file,
                 dry_run=False,
                 verbose=False,
                 compress=compress,
                 max_dimension=max_dimension,
                 image_scale=image_scale,
+                encode_cache=encode_cache,
+                cache_lock=cache_lock,
             )
-            img_count += count
-            img_errors += errs
+
+        if worker_count > 1:
+            # 先同步预热首个文件，使跨页共享背景图在并发阶段直接命中编码缓存
+            first_c, first_e, first_v = _align_one(svg_files[0])
+            img_count += first_c
+            img_errors += first_e
+            office_vector_count += first_v
+            if len(svg_files) > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as ex:
+                    for count, errs, vecs in ex.map(_align_one, svg_files[1:]):
+                        img_count += count
+                        img_errors += errs
+                        office_vector_count += vecs
+        else:
+            for svg_file in svg_files:
+                count, errs, vecs = _align_one(svg_file)
+                img_count += count
+                img_errors += errs
+                office_vector_count += vecs
         if img_errors:
             safe_print(
                 f"[ERROR] Image alignment/embedding failed for "
@@ -295,8 +322,12 @@ def _process_candidate_directory(
             safe_print("[3/3] Flattening text...")
         flatten_count = 0
         flatten_errors = 0
-        for svg_file in candidate_dir.glob('*.svg'):
-            result = process_flatten_text(svg_file, verbose=False)
+        if worker_count > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as ex:
+                results = list(ex.map(lambda p: process_flatten_text(p, verbose=False), svg_files))
+        else:
+            results = [process_flatten_text(svg_file, verbose=False) for svg_file in svg_files]
+        for result in results:
             if result is FlattenTextResult.CHANGED:
                 flatten_count += 1
             elif result is FlattenTextResult.ERROR:

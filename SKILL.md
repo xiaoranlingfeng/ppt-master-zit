@@ -15,7 +15,7 @@ description: >
   user says 「grill me」「逐项确认」「别替我决定」or wants to decide every
   outline, page and transition personally.
 metadata:
-  version: "6.10.0"  # base: official ppt-master v6.10.0 · fork build: v6.10.0-comfyui.1
+  version: "6.10.0"  # base: official ppt-master v6.10.0 (+63a03673) · fork build: v6.10.0-comfyui.2
   copyright: "Copyright (c) 2025-2026 Hugo He"
   license: "MIT"
   official_repository: "https://github.com/hugohe3/ppt-master"

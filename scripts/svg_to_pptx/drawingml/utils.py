@@ -15,6 +15,7 @@ import unicodedata
 from collections import Counter
 from collections.abc import Iterator
 from decimal import Decimal, ROUND_HALF_UP
+from functools import lru_cache
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -3307,24 +3308,15 @@ def _ea_default(language: str | None, serif: bool) -> str:
     return 'SimSun' if serif else 'Microsoft YaHei'
 
 
-def parse_font_family(
+@lru_cache(maxsize=512)
+def _parse_font_family_cached(
     font_family_str: str,
     language: str | None = None,
-) -> dict[str, str]:
-    """Parse CSS font-family into latin/ea typeface names.
-
-    Prioritizes Windows-available fonts since PPTX is primarily opened on
-    Windows. macOS/Linux-only fonts are mapped via FONT_FALLBACK_WIN. The
-    first named Latin face fills ``latin`` and the first named CJK face fills
-    ``ea``; a CJK face also serves ``latin`` when no named Latin face exists,
-    and a generic family fills ``latin`` only when it precedes every named face.
-    ``language`` (the deck's BCP-47 primary language) picks the EA fallback
-    when the stack names no CJK face, so Japanese text never lands on a
-    Chinese face.
-    """
+) -> tuple[str, str]:
+    """缓存 CSS font-family 解析结果，返回不可变 (latin, ea) 元组。"""
     is_japanese = _language_is(language, 'ja')
     if not font_family_str:
-        return {'latin': 'Segoe UI', 'ea': _ea_default(language, False)}
+        return ('Segoe UI', _ea_default(language, False))
 
     fonts = [f.strip().strip("'\"") for f in font_family_str.split(',')]
     latin_font = None
@@ -3360,7 +3352,16 @@ def parse_font_family(
     if not ea_font:
         ea_font = _ea_default(language, final_latin in _SERIF_LATIN)
 
-    return {'latin': final_latin, 'ea': ea_font}
+    return (final_latin, ea_font)
+
+
+def parse_font_family(
+    font_family_str: str,
+    language: str | None = None,
+) -> dict[str, str]:
+    """Parse CSS font-family into latin/ea typeface names."""
+    latin, ea = _parse_font_family_cached(font_family_str or '', language)
+    return {'latin': latin, 'ea': ea}
 
 
 def unsafe_exported_font_faces(font_family_str: str) -> dict[str, str]:
@@ -3419,6 +3420,9 @@ def _is_hangul_char(ch: str) -> bool:
 def is_cjk_char(ch: str) -> bool:
     """Return whether one character uses the project East Asian width model."""
     cp = ord(ch)
+    # 绝大多数拉丁/数字/标点码点低于 0x1100，快速短路避免四层区间函数调用
+    if cp < 0x1100:
+        return False
     return (
         _is_han_char(ch)
         or _is_hiragana_char(ch)
@@ -3662,13 +3666,13 @@ def _virama_script_key(cluster: str, virama: str) -> str | None:
     return None
 
 
-def split_project_text_clusters(text: str) -> list[str]:
-    """Split text into the rendered units used by project width estimates.
-
-    This intentionally implements only the Unicode joins that affect SVG to
-    DrawingML tracking: combining marks, variation selectors, emoji modifiers,
-    ZWJ sequences, regional-indicator pairs, and common virama conjuncts.
-    """
+@lru_cache(maxsize=4096)
+def _split_project_text_clusters_cached(text: str) -> tuple[str, ...]:
+    """带缓存的字素簇拆分，纯 ASCII 无回车字符串走快速路径。"""
+    if not text:
+        return ()
+    if text.isascii() and '\r' not in text:
+        return tuple(text)
     clusters: list[str] = []
     virama_script: str | None = None
     emoji_join = False
@@ -3715,7 +3719,17 @@ def split_project_text_clusters(text: str) -> list[str]:
             clusters.append(ch)
             virama_script = None
             emoji_join = False
-    return clusters
+    return tuple(clusters)
+
+
+def split_project_text_clusters(text: str) -> list[str]:
+    """Split text into the rendered units used by project width estimates.
+
+    This intentionally implements only the Unicode joins that affect SVG to
+    DrawingML tracking: combining marks, variation selectors, emoji modifiers,
+    ZWJ sequences, regional-indicator pairs, and common virama conjuncts.
+    """
+    return list(_split_project_text_clusters_cached(text))
 
 
 def resolve_text_run_fonts(text: str, fonts: dict[str, str]) -> dict[str, str]:
@@ -3748,8 +3762,11 @@ _FIXED_SPACE_EMS = {
 _UNDECOMPOSED_BASE_LETTERS = str.maketrans('đĐłŁøØħĦ', 'dDlLoOhH')
 
 
+@lru_cache(maxsize=1024)
 def _base_letter(ch: str) -> str:
     """Return the unaccented letter a precomposed character advances like."""
+    if ord(ch) < 128:
+        return ch
     decomposed = unicodedata.normalize('NFD', ch)
     if len(decomposed) > 1 and all(
         unicodedata.category(mark) == 'Mn' for mark in decomposed[1:]
@@ -3836,19 +3853,19 @@ def get_font_advances(
     return entry['advances'] if entry is not None else None
 
 
-def estimate_text_cluster_widths(
+@lru_cache(maxsize=4096)
+def _estimate_text_cluster_widths_cached(
     text: str,
     font_size: float,
-    font_weight: str = '400',
-    *,
-    font_family: str | None = None,
-    font_style: str = 'normal',
-) -> list[float]:
-    """Estimate each project text cluster without inserting tracking."""
+    font_weight: str,
+    font_family: str | None,
+    font_style: str,
+) -> tuple[float, ...]:
+    """缓存单段文本各字素簇的估算宽度，显著加速折行与质检热路径。"""
     advances = get_font_advances(font_family, font_weight, font_style)
     bold = font_weight in ('bold', '600', '700', '800', '900')
-    widths = []
-    for cluster in split_project_text_clusters(text):
+    widths: list[float] = []
+    for cluster in _split_project_text_clusters_cached(text):
         cjk = any(is_cjk_char(ch) for ch in cluster)
         if advances is not None and not cjk and all(
             ch in advances and not _is_emoji_base(ch) and not _is_grapheme_extend(ch)
@@ -3870,7 +3887,23 @@ def estimate_text_cluster_widths(
             continue
         width = _estimate_grapheme_width(cluster, font_size)
         widths.append(width * 1.05 if bold and not cjk else width)
-    return widths
+    return tuple(widths)
+
+
+def estimate_text_cluster_widths(
+    text: str,
+    font_size: float,
+    font_weight: str = '400',
+    *,
+    font_family: str | None = None,
+    font_style: str = 'normal',
+) -> list[float]:
+    """Estimate each project text cluster without inserting tracking."""
+    return list(
+        _estimate_text_cluster_widths_cached(
+            text, font_size, font_weight, font_family, font_style,
+        )
+    )
 
 
 def estimate_text_width(text: str, font_size: float, font_weight: str = '400') -> float:

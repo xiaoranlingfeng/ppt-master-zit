@@ -51,6 +51,7 @@ import math
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 from xml.etree import ElementTree as ET
@@ -276,32 +277,40 @@ def _encode_pil_to_data_uri(
     )
     pil_format = _PIL_FORMAT_BY_MIME.get(mime_type, 'PNG')
 
-    # Encode current PIL image
+    # 单次内存缩放与编码，消除原实现先 save 再交由 _optimize_image_bytes 二次解编码的
+    # 双倍 CPU 开销（同时避免 JPEG 二次有损重编码造成的画质劣化）。
     try:
         prepared = _normalize_for_save(img, mime_type)
+        downscaled_here = False
+        if max_dimension:
+            w, h = prepared.size
+            if w > max_dimension or h > max_dimension:
+                from PIL import Image as _PILImage
+                ratio = min(max_dimension / w, max_dimension / h)
+                new_w, new_h = max(1, int(w * ratio)), max(1, int(h * ratio))
+                prepared = prepared.resize((new_w, new_h), _PILImage.Resampling.LANCZOS)
+                downscaled_here = True
         buf = io.BytesIO()
         save_kwargs: dict = {'format': pil_format}
         if pil_format == 'JPEG':
-            save_kwargs['quality'] = 95
+            save_kwargs['quality'] = 85 if compress else 95
             save_kwargs['optimize'] = True
         elif pil_format == 'PNG':
-            save_kwargs['optimize'] = True
+            # compress=True 时使用 optimize=True；避免重复二次压 PNG
+            if compress:
+                save_kwargs['optimize'] = True
         prepared.save(buf, **save_kwargs)
         encoded_bytes = buf.getvalue()
     except (OSError, ValueError):
         return None
 
-    optimized_bytes = _optimize_image_bytes(
-        encoded_bytes, mime_type, compress=compress, max_dimension=max_dimension,
-    )
-
-    # If the original represents the same uncropped pixels and is smaller,
-    # retain it instead of inflating an already efficient PNG/JPEG.
-    chosen = optimized_bytes
+    # 若原图未发生裁切/缩放且体积更小，保留原始字节以免越压越大
+    chosen = encoded_bytes
     if (
         fallback_bytes
+        and not downscaled_here
         and mime_type == original_mime_type
-        and len(fallback_bytes) < len(optimized_bytes)
+        and len(fallback_bytes) < len(encoded_bytes)
     ):
         chosen = fallback_bytes
 
@@ -354,49 +363,105 @@ def _process_one_image(
     image_scale: float,
     preserve_source_pixels: bool,
     verbose: bool,
-) -> tuple[bool, str | None]:
+    encode_cache: dict | None = None,
+    cache_lock: threading.Lock | None = None,
+) -> tuple[bool, str | None, bool]:
     """Align (slice/meet) and embed a single <image>.
 
-    Returns ``(processed, error)`` where *processed* is True iff the image
-    was rewritten and *error* is a short message when something went wrong
-    (the image is left untouched in that case).
+    Returns ``(processed, error, is_office_vector)`` where *processed* is True
+    iff the image was rewritten, *error* is a short message on failure, and
+    *is_office_vector* flags skipped local EMF/WMF assets.
     """
     href = _get_href(image)
     if not href:
-        return False, None
+        return False, None, False
     if href.lower().startswith('data:'):
         payload_error = svg_data_uri_payload_error(href)
         if payload_error is not None:
-            return False, payload_error
-        return False, None  # already inline
+            return False, payload_error, False
+        return False, None, False  # already inline
 
     img_path = _resolve_image_path(href, svg_dir)
     if img_path is None:
-        return False, f'unresolved href: {href[:60]}'
+        return False, f'unresolved href: {href[:60]}', False
+
+    if img_path.suffix.lower() in _OFFICE_VECTOR_EXTENSIONS:
+        if verbose:
+            print(f'   [INFO] {img_path.name}: Office vector left external for native PPTX passthrough')
+        return False, None, True
+
+    box_x = _parse_float(image.get('x'))
+    box_y = _parse_float(image.get('y'))
+    box_w = _parse_float(image.get('width'))
+    box_h = _parse_float(image.get('height'))
+    par_attr = (image.get('preserveAspectRatio') or '').strip()
+
+    # 同批次多页复用同一图像与相同几何参数时，直接命中编码缓存跳过解码与 PNG/JPEG 压缩
+    cache_key = None
+    if encode_cache is not None:
+        try:
+            abs_img_path = os.path.abspath(img_path)
+            st = os.stat(abs_img_path)
+            cache_key = (
+                abs_img_path,
+                st.st_mtime_ns,
+                st.st_size,
+                par_attr,
+                round(box_w, 4),
+                round(box_h, 4),
+                compress,
+                max_dimension,
+                round(image_scale, 4),
+                preserve_source_pixels,
+            )
+            if cache_lock is not None:
+                with cache_lock:
+                    cached = encode_cache.get(cache_key)
+            else:
+                cached = encode_cache.get(cache_key)
+            if cached is not None:
+                c_kind, c_uri, c_off_x, c_off_y, c_w, c_h, c_stretch, c_slice = cached
+                _set_href(image, c_uri)
+                if c_kind == 'raster':
+                    image.set('x', _format_number(box_x + c_off_x))
+                    image.set('y', _format_number(box_y + c_off_y))
+                    image.set('width', _format_number(c_w))
+                    image.set('height', _format_number(c_h))
+                    if c_stretch:
+                        image.set('preserveAspectRatio', 'none')
+                    elif c_slice:
+                        image.set('preserveAspectRatio', par_attr)
+                    elif 'preserveAspectRatio' in image.attrib:
+                        del image.attrib['preserveAspectRatio']
+                return True, None, False
+        except OSError:
+            cache_key = None
 
     try:
         with open(img_path, 'rb') as fh:
             raw_bytes = fh.read()
     except OSError as exc:
-        return False, f'read failed: {exc}'
-
-    if img_path.suffix.lower() in _OFFICE_VECTOR_EXTENSIONS:
-        if verbose:
-            print(f'   [INFO] {img_path.name}: Office vector left external for native PPTX passthrough')
-        return False, None
+        return False, f'read failed: {exc}', False
 
     if _is_svg_image(img_path, raw_bytes):
         payload_error = svg_image_payload_error(raw_bytes)
         if payload_error is not None:
-            return False, f'{img_path.name}: {payload_error}'
+            return False, f'{img_path.name}: {payload_error}', False
         _embed_raw_image(image, img_path, raw_bytes)
+        if cache_key is not None and encode_cache is not None:
+            entry = ('raw', _get_href(image), 0.0, 0.0, box_w, box_h, False, False)
+            if cache_lock is not None:
+                with cache_lock:
+                    encode_cache[cache_key] = entry
+            else:
+                encode_cache[cache_key] = entry
         if verbose:
             print(f'   [OK] {img_path.name} (svg, embedded as-is)')
-        return True, None
+        return True, None, False
 
     img = _load_pil_image(img_path)
     if img is None:
-        return False, 'PIL open failed'
+        return False, 'PIL open failed', False
 
     # Multi-frame images (animated GIF / WebP / APNG): every PIL transform
     # and re-save below operates on frame 0 only, silently flattening the
@@ -412,26 +477,26 @@ def _process_one_image(
             print(f'   [WARN] {img_path.name}: animated image kept as-is '
                   f'({img.size[0]}x{img.size[1]} exceeds max dimension '
                   f'{max_dimension}px); animations are exempt from size limits')
+        if cache_key is not None and encode_cache is not None:
+            entry = ('raw', _get_href(image), 0.0, 0.0, box_w, box_h, False, False)
+            if cache_lock is not None:
+                with cache_lock:
+                    encode_cache[cache_key] = entry
+            else:
+                encode_cache[cache_key] = entry
         if verbose:
             print(f'   [OK] {img_path.name} (animated, embedded as-is)')
-        return True, None
+        return True, None, False
 
     geometry_normalized = _has_exif_geometry_transform(img)
     img = _prepare_raster_for_geometry(img)
-    box_x = _parse_float(image.get('x'))
-    box_y = _parse_float(image.get('y'))
-    box_w = _parse_float(image.get('width'))
-    box_h = _parse_float(image.get('height'))
     if (
         not math.isfinite(box_w)
         or not math.isfinite(box_h)
         or box_w <= 0
         or box_h <= 0
     ):
-        return False, 'zero-sized box'
-
-    par_attr = image.get('preserveAspectRatio') or ''
-    par_attr = par_attr.strip()
+        return False, 'zero-sized box', False
 
     # ------------------------------------------------------------------
     # Decide the spatial transform
@@ -503,7 +568,7 @@ def _process_one_image(
         fallback_bytes=raw_bytes if not transformed else None,
     )
     if encoded is None:
-        return False, 'encode failed'
+        return False, 'encode failed', False
     data_uri, _ = encoded
 
     _set_href(image, data_uri)
@@ -518,13 +583,30 @@ def _process_one_image(
     elif 'preserveAspectRatio' in image.attrib:
         del image.attrib['preserveAspectRatio']
 
+    if cache_key is not None and encode_cache is not None:
+        entry = (
+            'raster',
+            data_uri,
+            new_x - box_x,
+            new_y - box_y,
+            new_w,
+            new_h,
+            preserve_stretch,
+            preserve_slice,
+        )
+        if cache_lock is not None:
+            with cache_lock:
+                encode_cache[cache_key] = entry
+        else:
+            encode_cache[cache_key] = entry
+
     if verbose:
         if preserve_source_pixels:
             suffix = ' (nested crop, source pixels preserved)'
         else:
             suffix = ' (cropped)' if transformed else ''
         print(f'   [OK] {img_path.name}{suffix}')
-    return True, None
+    return True, None, False
 
 
 def count_office_vector_refs_in_svg(svg_path: str | Path) -> int:
@@ -551,7 +633,7 @@ def count_office_vector_refs_in_svg(svg_path: str | Path) -> int:
     return count
 
 
-def align_and_embed_images_in_svg(
+def align_and_embed_images_in_svg_with_stats(
     svg_path: str | Path,
     *,
     dry_run: bool = False,
@@ -559,10 +641,12 @@ def align_and_embed_images_in_svg(
     compress: bool = True,
     max_dimension: int | None = 2560,
     image_scale: float = 2.0,
-) -> tuple[int, int]:
-    """Run the merged align + embed pass on a single SVG file.
+    encode_cache: dict | None = None,
+    cache_lock: threading.Lock | None = None,
+) -> tuple[int, int, int]:
+    """执行单页图像对齐与内嵌，同时返回外部 Office 矢量引用计数，避免二次解析 XML。
 
-    Returns ``(processed_count, error_count)``.
+    Returns ``(processed_count, error_count, office_vector_count)``.
     """
     svg_path = Path(svg_path)
     svg_dir = svg_path.parent.resolve()
@@ -578,7 +662,7 @@ def align_and_embed_images_in_svg(
             f'  [ERROR] {svg_path.name}: parse failed ({exc})',
             file=sys.stderr,
         )
-        return (0, 1)
+        return (0, 1, 0)
     root = tree.getroot()
     nested_crop_image_ids = _nested_crop_image_ids(root)
 
@@ -587,6 +671,7 @@ def align_and_embed_images_in_svg(
     seen: set[int] = set()
     processed = 0
     errors = 0
+    office_vectors = 0
 
     for image in _iter_image_elements(root):
         ident = id(image)
@@ -598,14 +683,18 @@ def align_and_embed_images_in_svg(
             processed += 1
             continue
 
-        ok, err = _process_one_image(
+        ok, err, is_office_vec = _process_one_image(
             image, svg_dir,
             compress=compress, max_dimension=max_dimension,
             image_scale=image_scale,
             preserve_source_pixels=ident in nested_crop_image_ids,
             verbose=verbose,
+            encode_cache=encode_cache,
+            cache_lock=cache_lock,
         )
-        if ok:
+        if is_office_vec:
+            office_vectors += 1
+        elif ok:
             processed += 1
         elif err:
             errors += 1
@@ -614,6 +703,34 @@ def align_and_embed_images_in_svg(
     if processed > 0 and errors == 0 and not dry_run:
         tree.write(svg_path, encoding='utf-8', xml_declaration=False)
 
+    return (processed, errors, office_vectors)
+
+
+def align_and_embed_images_in_svg(
+    svg_path: str | Path,
+    *,
+    dry_run: bool = False,
+    verbose: bool = False,
+    compress: bool = True,
+    max_dimension: int | None = 2560,
+    image_scale: float = 2.0,
+    encode_cache: dict | None = None,
+    cache_lock: threading.Lock | None = None,
+) -> tuple[int, int]:
+    """Run the merged align + embed pass on a single SVG file.
+
+    Returns ``(processed_count, error_count)``.
+    """
+    processed, errors, _ = align_and_embed_images_in_svg_with_stats(
+        svg_path,
+        dry_run=dry_run,
+        verbose=verbose,
+        compress=compress,
+        max_dimension=max_dimension,
+        image_scale=image_scale,
+        encode_cache=encode_cache,
+        cache_lock=cache_lock,
+    )
     return (processed, errors)
 
 

@@ -29,3 +29,6 @@ jobs:
       - name: Manifest resume tests (no GPU)
         working-directory: scripts
         run: python test_manifest_resume.py -v
+      - name: Upstream detached server & manifest tests
+        working-directory: scripts
+        run: python -m unittest tests/test_server_detached.py tests/test_image_gen_manifest.py -v

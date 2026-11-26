@@ -2221,6 +2221,7 @@ def _estimate_run_width_with_headroom(run: dict[str, Any]) -> float:
         / FONT_PX_TO_HUNDREDTHS_PT
     )
     width = 0.0
+    single_raw: float | None = None
     for text, cjk in segments:
         segment = dict(run, text=text)
         if serif_by_script[cjk]:
@@ -2230,7 +2231,10 @@ def _estimate_run_width_with_headroom(run: dict[str, Any]) -> float:
             base = _TEXT_WIDTH_HEADROOM_BASE
             ceiling = _TEXT_WIDTH_HEADROOM_CAPS
         caps = 0.0 if cjk else _uppercase_fraction([segment])
-        width += _estimate_run_text_width(segment) * (
+        seg_raw = _estimate_run_text_width(segment)
+        if len(segments) == 1:
+            single_raw = seg_raw
+        width += seg_raw * (
             base + (ceiling - base) * caps
         )
     # Splitting the run drops the tracking gap at each segment boundary; add
@@ -2238,7 +2242,8 @@ def _estimate_run_width_with_headroom(run: dict[str, Any]) -> float:
     # the segment that follows it. Headroom is a safety margin, so the result
     # never falls below the run's raw advance either.
     width += letter_spacing_px * (len(segments) - 1)
-    return max(width, _estimate_run_text_width(run))
+    raw_width = single_raw if single_raw is not None else _estimate_run_text_width(run)
+    return max(width, raw_width)
 
 
 # Faces whose glyphs run wider than the generic advance table at the same

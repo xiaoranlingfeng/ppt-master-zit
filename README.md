@@ -2,7 +2,7 @@
 
 > Former names 曾用名: `ppt-master-qwen-image-2-1` · `ppt-master-zit` — renamed 2026-10-13; the fork is defined by its local ComfyUI backend, not by any single model.
 
-> **Upstream lock 上游锁定**: this fork is rebased onto official ppt-master **v6.10.0** (MIT, Hugo He). Fork releases are tagged `v<upstream>-comfyui.<n>` (`v6.7.0-comfyui.1` shipped the MOSS + interview-gate baseline, `v6.7.0-comfyui.2` the manifest-resume + rendered-output gate; the current build is `v6.10.0-comfyui.1`); pin those tags instead of `main` if you need a stable point. A GitHub Actions `smoke` workflow runs the GPU-free unit tests (backend, export regressions, manifest resume) on every push.
+> **Upstream lock 上游锁定**: this fork is rebased onto official ppt-master **v6.10.0** + post-release server fix `63a03673` (MIT, Hugo He). Fork releases are tagged `v<upstream>-comfyui.<n>` (`v6.7.0-comfyui.1` shipped the MOSS + interview-gate baseline, `v6.7.0-comfyui.2` the manifest-resume + rendered-output gate, `v6.10.0-comfyui.1` rebased onto v6.10.0; the current build is `v6.10.0-comfyui.2` with upstream `63a03673` sync and end-to-end performance optimizations); pin those tags instead of `main` if you need a stable point. A GitHub Actions `smoke` workflow runs the GPU-free unit tests (backend, export regressions, manifest resume, detached-server checks) on every push.
 
 [English](#english) · [中文](#中文)
 
@@ -82,7 +82,8 @@ python scripts/image_gen.py "students collaborating in a bright classroom, flat 
 | `COMFY_TEXT_RESOLUTION` | follows the size tier | pin the Qwen-Image-2.1 encoder `resolution` hint |
 | `COMFY_MEGAPIXELS` | from `image_size` | override the megapixel target directly |
 | `COMFY_TIMEOUT` / `COMFY_START_TIMEOUT` | `900` / `300` | per-image / cold-boot wait limits (seconds) |
-| `IMAGE_CONCURRENCY` | `2` | local GPU serializes; keep at 1–2 |
+| `COMFY_USE_WS` / `COMFY_POLL_INTERVAL` | `1` / adaptive `0.3–1.2s` | WebSocket instant completion (when `websocket-client` is installed) + HTTP poll fallback |
+| `IMAGE_CONCURRENCY` | `2` | local GPU uses a sliding-window pipeline with zero inter-batch pause; keep at 1–2 |
 
 ### Prompting tips (Qwen-Image-2.1)
 
@@ -181,7 +182,8 @@ python scripts/image_gen.py "明亮教室里的学生协作，扁平插画，暖
 | `COMFY_TEXT_RESOLUTION` | 跟随出图档位 | 手动钉住 Qwen-Image-2.1 编码器的 `resolution` 条件 |
 | `COMFY_MEGAPIXELS` | 由 `image_size` 推导 | 直接指定目标像素量，绕开 1K/2K/4K 档位表 |
 | `COMFY_TIMEOUT` / `COMFY_START_TIMEOUT` | `900` / `300` | 出图 / 冷启动等待上限（秒） |
-| `IMAGE_CONCURRENCY` | `2` | 本地 GPU 串行，建议 1–2 |
+| `COMFY_USE_WS` / `COMFY_POLL_INTERVAL` | `1` / 自适应 `0.3–1.2s` | WebSocket 零延迟完成监听（需可选 `websocket-client`），自动回退自适应 HTTP 轮询 |
+| `IMAGE_CONCURRENCY` | `2` | 本地 GPU 启用滑动窗口流水线调度且无批次空等，建议 1–2 |
 
 ### 提示词要点（Qwen-Image-2.1）
 

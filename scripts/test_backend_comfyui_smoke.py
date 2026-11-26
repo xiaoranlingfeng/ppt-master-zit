@@ -393,5 +393,145 @@ class TestMossTemplateAndPromptGuard(unittest.TestCase):
         self.assertIsNotNone(bc._moss_prompt_warning("a cat"))
 
 
+class TestArbitraryAspectRatioAndCaching(unittest.TestCase):
+    """验证任意 W:H 比例支持与模板内存缓存失效逻辑。"""
+
+    def test_arbitrary_wh_ratio_supported_and_aligned(self):
+        w, h = bc._resolve_dimensions("1.85:1", "1K", "qwen")
+        self.assertEqual(w % 32, 0)
+        self.assertEqual(h % 32, 0)
+        self.assertAlmostEqual(w / h, 1.85, delta=0.1)
+
+        wm, hm = bc._resolve_dimensions("5:3", "1K", "moss")
+        self.assertEqual(wm % 16, 0)
+        self.assertEqual(hm % 16, 0)
+        self.assertAlmostEqual(wm / hm, 5 / 3, delta=0.05)
+
+    def test_invalid_or_extreme_ratio_rejected(self):
+        with self.assertRaises(ValueError):
+            bc._resolve_dimensions("not-a-ratio", "1K")
+        with self.assertRaises(ValueError):
+            bc._resolve_dimensions("100:1", "1K")
+
+    def test_template_cache_returns_isolated_copy_and_refreshes_on_change(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tpl = Path(tmp) / "custom_api.json"
+            tpl.write_text(
+                json.dumps({"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "v1"}}}),
+                encoding="utf-8",
+            )
+            g1 = bc._load_template(tpl)
+            g1["1"]["inputs"]["text"] = "mutated"
+            g2 = bc._load_template(tpl)
+            self.assertEqual(g2["1"]["inputs"]["text"], "v1")
+
+            # 修改模板内容后，缓存应随文件元信息变化自动刷新
+            tpl.write_text(
+                json.dumps({"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "version-2"}}}),
+                encoding="utf-8",
+            )
+            g3 = bc._load_template(tpl)
+            self.assertEqual(g3["1"]["inputs"]["text"], "version-2")
+
+
+class TestBreakawayAndWaitOptimizations(unittest.TestCase):
+    """验证 Windows breakaway 精确回退、探活缓存与 WebSocket 完成监听。"""
+
+    def test_windows_breakaway_only_falls_back_on_access_denied(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        def _win_err(code: int) -> OSError:
+            err = OSError(code, "err")
+            err.winerror = code
+            return err
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            with mock.patch.object(bc.sys, "platform", "win32"), \
+                 mock.patch.object(bc, "_resolve_launch_plan", return_value=(["python.exe", "main.py"], cwd)), \
+                 mock.patch.object(bc.subprocess, "DETACHED_PROCESS", 0x008, create=True), \
+                 mock.patch.object(bc.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, create=True), \
+                 mock.patch.object(bc.subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000, create=True):
+                # Access Denied (5) 应回退到不带 breakaway 的启动并输出警告
+                buf = io.StringIO()
+                with mock.patch.object(bc.subprocess, "Popen", side_effect=[_win_err(5), mock.MagicMock()]) as popen, \
+                     contextlib.redirect_stdout(buf):
+                    bc._launch_comfyui("http://127.0.0.1:8188")
+                self.assertEqual(popen.call_count, 2)
+                self.assertIn("breakaway", buf.getvalue())
+
+                # 非 Access Denied 错误（如 2 = 文件不存在）不应无意义重试
+                with mock.patch.object(bc.subprocess, "Popen", side_effect=_win_err(2)) as popen:
+                    with self.assertRaises(OSError):
+                        bc._launch_comfyui("http://127.0.0.1:8188")
+                popen.assert_called_once()
+
+    def test_wait_via_ws_returns_history_immediately_on_completion(self):
+        from unittest import mock
+
+        class FakeWS:
+            def __init__(self, messages):
+                self._msgs = list(messages)
+                self.closed = False
+
+            def settimeout(self, _t):
+                pass
+
+            def recv(self):
+                return self._msgs.pop(0)
+
+            def close(self):
+                self.closed = True
+
+        fake_entry = {"outputs": {"10": {"images": [{"filename": "a.png", "type": "output"}]}}}
+        ws = FakeWS([
+            json.dumps({"type": "progress", "data": {"prompt_id": "p1", "value": 1, "max": 25}}),
+            json.dumps({"type": "executing", "data": {"prompt_id": "p1", "node": None}}),
+        ])
+        with mock.patch.object(bc, "_check_history_entry", return_value=fake_entry):
+            entry = bc._wait_for_completion("http://127.0.0.1:8188", "p1", 10, ws=ws)
+        self.assertEqual(entry, fake_entry)
+        self.assertTrue(ws.closed)
+
+    def test_wait_via_ws_raises_on_execution_error(self):
+        class FakeWS:
+            def settimeout(self, _t):
+                pass
+
+            def recv(self):
+                return json.dumps({
+                    "type": "execution_error",
+                    "data": {
+                        "prompt_id": "p2",
+                        "node_id": "458",
+                        "node_type": "KSampler",
+                        "exception_message": "OOM",
+                    },
+                })
+
+            def close(self):
+                pass
+
+        with self.assertRaises(bc._ComfyRunFailed) as ctx:
+            bc._wait_for_completion("http://127.0.0.1:8188", "p2", 10, ws=FakeWS())
+        self.assertIn("OOM", str(ctx.exception))
+
+    def test_ready_cache_avoids_redundant_probes(self):
+        from unittest import mock
+
+        url = "http://127.0.0.1:18188"
+        bc._invalidate_ready_cache(url)
+        with mock.patch.object(bc, "_server_ready", return_value=True) as probe:
+            bc._ensure_server_running(url)
+            bc._ensure_server_running(url)
+        probe.assert_called_once()
+        bc._invalidate_ready_cache(url)
+
+
 if __name__ == "__main__":
     unittest.main()

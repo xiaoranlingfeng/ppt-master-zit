@@ -75,8 +75,10 @@ import json
 import math
 import random
 import shlex
+import stat as _stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -92,22 +94,31 @@ configure_utf8_stdio()
 import os
 
 import requests
+from requests.adapters import HTTPAdapter
 
-# Direct localhost session: never route ComfyUI traffic through a system proxy
-# (HTTP_PROXY/HTTPS_PROXY are commonly set on this machine and would break
-# access to 127.0.0.1:8188).
+# 本机直连会话：绕过系统代理（避免 HTTP_PROXY/HTTPS_PROXY 劫持 127.0.0.1:8188），
+# 并配置连接池复用 TCP 长连接以支撑 manifest 并发提交。
 _SESSION = requests.Session()
 _SESSION.trust_env = False
 _SESSION.proxies = {"http": None, "https": None}
+_HTTP_ADAPTER = HTTPAdapter(pool_connections=4, pool_maxsize=8)
+_SESSION.mount("http://", _HTTP_ADAPTER)
+_SESSION.mount("https://", _HTTP_ADAPTER)
 
 from image_backends.backend_common import (
     MAX_RETRIES,
     is_permanent_error,
     is_rate_limit_error,
     normalize_image_size,
+    parse_aspect_ratio,
+    resolve_output_path,
     retry_delay,
     save_image_bytes,
 )
+
+# 声明本地后端特性，供 image_gen.py 启用滑动窗口流水线调度并跳过云端批次休眠。
+IS_LOCAL_BACKEND = True
+INTER_BATCH_PAUSE_SECONDS = 0.0
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 _COMFY_TEMPLATE_DIR = _SCRIPTS_DIR.parent / "templates" / "comfyui"
@@ -116,6 +127,13 @@ PROMPT_PLACEHOLDER = "{{POSITIVE_PROMPT}}"
 # Qwen-Image-2.1 measures ~80 s per 2K image on a mobile 3080 and the local GPU
 # queue can sit behind another client, so the old 600 s cap killed live runs.
 DEFAULT_IMAGE_TIMEOUT = 900
+_WIN_ERROR_ACCESS_DENIED = 5
+_READY_TTL_SECONDS = 15.0
+_READY_CACHE: dict[str, float] = {}
+_READY_LOCK = threading.Lock()
+_AUTOSTART_LOCK = threading.Lock()
+_TEMPLATE_CACHE: dict[tuple[Path, int, int], dict] = {}
+_TEMPLATE_CACHE_LOCK = threading.Lock()
 
 # Named local model families. "template" is the API-format workflow shipped
 # under templates/comfyui/; "prompt_style" tells the deck pipeline which
@@ -251,44 +269,81 @@ def _launch_comfyui(base_url: str) -> None:
         )
         if sys.platform == "win32":
             detached = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-            # CREATE_BREAKAWAY_FROM_JOB lets the server outlive this agent
-            # session (job objects that kill children on close); fall back to
-            # plain detached when the job forbids breakaway.
+            breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+            # 对齐上游 server_common.popen_detached：仅在 Windows Job Object
+            # 拒绝 breakaway（ERROR_ACCESS_DENIED=5）时回退普通后台启动并告警，
+            # 避免掩盖可执行文件缺失等真实启动错误。
             try:
                 subprocess.Popen(
-                    cmd, creationflags=detached | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+                    cmd, creationflags=detached | breakaway,
                     **popen_kwargs,
                 )
                 return
-            except OSError:
+            except OSError as exc:
+                if getattr(exc, "winerror", None) != _WIN_ERROR_ACCESS_DENIED:
+                    raise
+                print(
+                    f"  [WARN] Windows Job Object 拒绝进程 breakaway ({exc})，已回退为普通后台启动；"
+                    "若当前命令结束后 ComfyUI 随之退出，请手动启动 ComfyUI 后重试。",
+                    flush=True,
+                )
                 subprocess.Popen(cmd, creationflags=detached, **popen_kwargs)
                 return
         subprocess.Popen(cmd, **popen_kwargs)
 
 
+def _mark_server_ready(base_url: str) -> None:
+    """记录指定地址最近一次健康探活时间，减少批量出图时的重复探测。"""
+    with _READY_LOCK:
+        _READY_CACHE[base_url] = time.monotonic()
+
+
+def _invalidate_ready_cache(base_url: str) -> None:
+    """清除指定地址的健康缓存，确保后续请求重新探活或触发自动拉起。"""
+    with _READY_LOCK:
+        _READY_CACHE.pop(base_url, None)
+
+
 def _ensure_server_running(base_url: str) -> None:
-    """Make sure ComfyUI answers; auto-start it when configured to do so."""
-    if _server_ready(base_url):
+    """确保 ComfyUI 已就绪；批量并发场景下通过互斥锁避免重复拉起多个实例。"""
+    with _READY_LOCK:
+        last_ok = _READY_CACHE.get(base_url)
+    if last_ok is not None and (time.monotonic() - last_ok) < _READY_TTL_SECONDS:
         return
-    if os.environ.get("COMFY_AUTOSTART", "1").strip().lower() in {"0", "false", "no"}:
-        raise ConnectionError(
-            f"ComfyUI is not reachable at {base_url} and COMFY_AUTOSTART=0. "
-            "Start the local ComfyUI manually and retry."
-        )
-    _launch_comfyui(base_url)
-    start_timeout = int(os.environ.get("COMFY_START_TIMEOUT", "300"))
-    deadline = time.time() + start_timeout
-    while time.time() < deadline:
-        if _server_ready(base_url, timeout=5.0):
-            print("  [OK] ComfyUI is up.", flush=True)
-            _open_browser(base_url)
+    if _server_ready(base_url):
+        _mark_server_ready(base_url)
+        return
+    with _AUTOSTART_LOCK:
+        # 二次检查，防止并发工作线程同时触发自动拉起
+        with _READY_LOCK:
+            last_ok = _READY_CACHE.get(base_url)
+        if last_ok is not None and (time.monotonic() - last_ok) < _READY_TTL_SECONDS:
             return
-        time.sleep(3)
-    raise ConnectionError(
-        f"ComfyUI did not become ready at {base_url} within {start_timeout}s. "
-        "Check comfyui_autostart.log under the integration root, or start it "
-        "manually with the aki launcher and retry."
-    )
+        if _server_ready(base_url):
+            _mark_server_ready(base_url)
+            return
+        if os.environ.get("COMFY_AUTOSTART", "1").strip().lower() in {"0", "false", "no"}:
+            raise ConnectionError(
+                f"ComfyUI is not reachable at {base_url} and COMFY_AUTOSTART=0. "
+                "Start the local ComfyUI manually and retry."
+            )
+        _launch_comfyui(base_url)
+        start_timeout = int(os.environ.get("COMFY_START_TIMEOUT", "300"))
+        deadline = time.time() + start_timeout
+        poll_delay = 0.5
+        while time.time() < deadline:
+            if _server_ready(base_url, timeout=5.0):
+                _mark_server_ready(base_url)
+                print("  [OK] ComfyUI is up.", flush=True)
+                _open_browser(base_url)
+                return
+            time.sleep(poll_delay)
+            poll_delay = min(2.0, poll_delay * 1.5)
+        raise ConnectionError(
+            f"ComfyUI did not become ready at {base_url} within {start_timeout}s. "
+            "Check comfyui_autostart.log under the integration root, or start it "
+            "manually with the aki launcher and retry."
+        )
 
 
 def _apply_dimension_rule(width: int, height: int, model: str | None = None) -> tuple[int, int]:
@@ -311,13 +366,21 @@ def _apply_dimension_rule(width: int, height: int, model: str | None = None) -> 
 
 def _resolve_dimensions(aspect_ratio: str, image_size: str,
                         model: str | None = None) -> tuple[int, int]:
-    """Compute width/height (model-aligned) for the requested ratio and size."""
+    """按目标宽高比与尺寸档位计算模型对齐后的宽高（支持任意正数 W:H）。"""
     ratio = ASPECT_RATIO_MAP.get(aspect_ratio)
     if ratio is None:
-        raise ValueError(
-            f"Unsupported aspect ratio '{aspect_ratio}' for comfyui backend. "
-            f"Supported: {sorted(ASPECT_RATIO_MAP)}"
-        )
+        try:
+            ratio = float(parse_aspect_ratio(aspect_ratio))
+        except ValueError as exc:
+            raise ValueError(
+                f"Unsupported aspect ratio '{aspect_ratio}' for comfyui backend. "
+                f"Expected positive W:H (e.g. 16:9, 1.85:1); preset ratios: {sorted(ASPECT_RATIO_MAP)}"
+            ) from exc
+        if ratio < 1 / 16 or ratio > 16:
+            raise ValueError(
+                f"Aspect ratio '{aspect_ratio}' is out of supported range (1:16 to 16:1) "
+                "for comfyui backend."
+            )
     normalized_size = normalize_image_size(image_size)
     megapixels = IMAGE_SIZE_TO_MEGAPIXELS.get(normalized_size)
     if megapixels is None:
@@ -408,8 +471,43 @@ def _resolve_template(model: str | None = None) -> tuple[Path, str | None]:
     return DEFAULT_TEMPLATE, "qwen"
 
 
+def _clone_graph(graph: dict) -> dict:
+    """快速深拷贝 ComfyUI API 工作流图，避免 json 往返序列化开销。"""
+    cloned: dict = {}
+    for nid, node in graph.items():
+        if not isinstance(node, dict):
+            cloned[nid] = node
+            continue
+        node_copy = dict(node)
+        inputs = node.get("inputs")
+        if isinstance(inputs, dict):
+            inputs_copy = {}
+            for k, v in inputs.items():
+                if isinstance(v, list):
+                    inputs_copy[k] = list(v)
+                elif isinstance(v, dict):
+                    inputs_copy[k] = dict(v)
+                else:
+                    inputs_copy[k] = v
+            node_copy["inputs"] = inputs_copy
+        cloned[nid] = node_copy
+    return cloned
+
+
 def _load_template(template_path: Path) -> dict:
-    if not template_path.is_file():
+    """加载并按文件修改时间缓存 ComfyUI API 工作流模板，返回独立副本。"""
+    key_path = os.path.abspath(template_path)
+    try:
+        st = os.stat(key_path)
+    except OSError as exc:
+        raise FileNotFoundError(
+            f"ComfyUI workflow template not found: {template_path}\n"
+            "Set COMFY_MODEL to qwen / moss / zit, or COMFY_WORKFLOW to an "
+            "API-format workflow JSON exported from ComfyUI (preinstalled: "
+            "templates/comfyui/qwen_image_2_1_t2i_api.json, "
+            "moss_image_sft_api.json, zit_basic_api.json)."
+        ) from exc
+    if not _stat.S_ISREG(st.st_mode):
         raise FileNotFoundError(
             f"ComfyUI workflow template not found: {template_path}\n"
             "Set COMFY_MODEL to qwen / moss / zit, or COMFY_WORKFLOW to an "
@@ -417,10 +515,21 @@ def _load_template(template_path: Path) -> dict:
             "templates/comfyui/qwen_image_2_1_t2i_api.json, "
             "moss_image_sft_api.json, zit_basic_api.json)."
         )
-    graph = json.loads(template_path.read_text(encoding="utf-8"))
+    cache_key = (key_path, st.st_mtime_ns, st.st_size)
+    with _TEMPLATE_CACHE_LOCK:
+        cached = _TEMPLATE_CACHE.get(cache_key)
+    if cached is not None:
+        return _clone_graph(cached)
+    graph = json.loads(Path(key_path).read_text(encoding="utf-8"))
     if not isinstance(graph, dict) or not graph:
         raise ValueError(f"Workflow template must be a non-empty JSON object: {template_path}")
-    return graph
+    with _TEMPLATE_CACHE_LOCK:
+        # 清理同一路径的旧版本缓存项，防止内存累积
+        stale = [k for k in _TEMPLATE_CACHE if k[0] == key_path]
+        for k in stale:
+            _TEMPLATE_CACHE.pop(k, None)
+        _TEMPLATE_CACHE[cache_key] = graph
+    return _clone_graph(graph)
 
 
 # Latent nodes whose width/height are patched; Flux2 latents (MOSS-Image)
@@ -492,7 +601,7 @@ def _patch_graph(
     model: str | None = None,
 ) -> dict:
     """Return a per-run copy of the template with prompt/size/seed injected."""
-    graph = json.loads(json.dumps(graph))  # deep copy
+    graph = _clone_graph(graph)
 
     # Positive-prompt carrier: a CLIPTextEncode whose text (Z-Image style
     # templates) or a TextEncodeQwenImage21 whose prompt (Qwen-Image-2.1,
@@ -606,34 +715,142 @@ class _ComfyRunFailed(RuntimeError):
     """Server executed the graph and reported a node failure."""
 
 
-def _wait_for_completion(base_url: str, prompt_id: str, timeout: int) -> dict:
-    """Poll /history until the run completes; return its history entry."""
+def _ws_enabled() -> bool:
+    """判断是否启用 WebSocket 实时事件监听（需安装可选依赖 websocket-client）。"""
+    return os.environ.get("COMFY_USE_WS", "1").strip().lower() not in {"0", "false", "no"}
+
+
+def _try_open_ws(base_url: str, client_id: str):
+    """尝试在提交任务前建立 ComfyUI WebSocket 连接，不可用时静默返回 None。"""
+    if not _ws_enabled():
+        return None
+    try:
+        import websocket  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    parsed = urlparse(base_url)
+    ws_scheme = "wss" if parsed.scheme == "https" else "ws"
+    ws_url = f"{ws_scheme}://{parsed.netloc}/ws?clientId={client_id}"
+    try:
+        return websocket.create_connection(ws_url, timeout=3.0, http_proxy_host=None)
+    except Exception:
+        return None
+
+
+def _check_history_entry(base_url: str, prompt_id: str) -> dict | None:
+    """查询单次 /history/{prompt_id}，若已完成返回条目，失败则抛 _ComfyRunFailed。"""
+    resp = _SESSION.get(f"{base_url}/history/{prompt_id}", timeout=30)
+    if resp.status_code != 200:
+        return None
+    entry = resp.json().get(prompt_id)
+    if not entry:
+        return None
+    status = entry.get("status") or {}
+    if status.get("status_str") == "error" or status.get("completed") is False:
+        details = []
+        for msg in status.get("messages") or []:
+            if isinstance(msg, list) and len(msg) > 1 and isinstance(msg[1], dict):
+                details.append(
+                    f"node {msg[1].get('node_id')} ({msg[1].get('node_type')}): "
+                    f"{msg[1].get('exception_message')}"
+                )
+        raise _ComfyRunFailed(
+            "ComfyUI execution failed"
+            + (f" — {'; '.join(details)[:800]}" if details else "")
+        )
+    if entry.get("outputs"):
+        return entry
+    return None
+
+
+def _wait_via_ws(ws, base_url: str, prompt_id: str, deadline: float) -> dict | None:
+    """通过 WebSocket 实时等待执行完成；遇到网络异常返回 None 交由 HTTP 轮询接管。"""
+    try:
+        while time.time() < deadline:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            ws.settimeout(min(5.0, remaining))
+            try:
+                raw = ws.recv()
+            except TimeoutError:
+                continue
+            except Exception as exc:
+                if "timed out" in str(exc).lower():
+                    continue
+                return None
+            if not isinstance(raw, str):
+                # 忽略二进制预览帧
+                continue
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            msg_type = msg.get("type")
+            data = msg.get("data") or {}
+            if data.get("prompt_id") != prompt_id:
+                continue
+            if msg_type == "execution_error":
+                detail = (
+                    f"node {data.get('node_id')} ({data.get('node_type')}): "
+                    f"{data.get('exception_message')}"
+                )
+                raise _ComfyRunFailed(f"ComfyUI execution failed — {detail[:800]}")
+            if msg_type == "execution_success" or (
+                msg_type == "executing" and data.get("node") is None
+            ):
+                # ComfyUI 触发完成事件后立即拉取一次历史记录，实现近零延迟返回
+                for _ in range(5):
+                    entry = _check_history_entry(base_url, prompt_id)
+                    if entry is not None:
+                        return entry
+                    time.sleep(0.1)
+                return None
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+    return None
+
+
+def _resolve_poll_schedule() -> tuple[float, float]:
+    """返回 HTTP 轮询的 (初始间隔, 最大间隔)，支持通过 COMFY_POLL_INTERVAL 覆盖。"""
+    raw = os.environ.get("COMFY_POLL_INTERVAL", "").strip()
+    if raw:
+        try:
+            val = max(0.1, float(raw))
+            return val, val
+        except ValueError:
+            pass
+    return 0.3, 1.2
+
+
+def _wait_for_completion(
+    base_url: str,
+    prompt_id: str,
+    timeout: int,
+    *,
+    ws=None,
+) -> dict:
+    """等待 ComfyUI 任务完成：优先 WebSocket 实时监听，不可用时自动退避 HTTP 轮询。"""
     deadline = time.time() + timeout
+    if ws is not None:
+        entry = _wait_via_ws(ws, base_url, prompt_id, deadline)
+        if entry is not None:
+            return entry
+
+    poll_delay, max_delay = _resolve_poll_schedule()
     while time.time() < deadline:
         try:
-            resp = _SESSION.get(f"{base_url}/history/{prompt_id}", timeout=30)
+            entry = _check_history_entry(base_url, prompt_id)
         except requests.RequestException:
-            time.sleep(3)
+            time.sleep(min(2.0, max_delay))
             continue
-        if resp.status_code == 200:
-            entry = resp.json().get(prompt_id)
-            if entry:
-                status = (entry.get("status") or {})
-                if status.get("status_str") == "error" or status.get("completed") is False:
-                    details = []
-                    for msg in status.get("messages") or []:
-                        if isinstance(msg, list) and len(msg) > 1 and isinstance(msg[1], dict):
-                            details.append(
-                                f"node {msg[1].get('node_id')} ({msg[1].get('node_type')}): "
-                                f"{msg[1].get('exception_message')}"
-                            )
-                    raise _ComfyRunFailed(
-                        "ComfyUI execution failed"
-                        + (f" — {'; '.join(details)[:800]}" if details else "")
-                    )
-                if entry.get("outputs"):
-                    return entry
-        time.sleep(2)
+        if entry is not None:
+            return entry
+        time.sleep(poll_delay)
+        poll_delay = min(max_delay, poll_delay * 1.4)
     raise RuntimeError(
         f"ComfyUI run {prompt_id} did not finish within {timeout}s "
         "(is the GPU busy with another queue?). Raise COMFY_TIMEOUT or clear "
@@ -642,7 +859,7 @@ def _wait_for_completion(base_url: str, prompt_id: str, timeout: int) -> dict:
 
 
 def _collect_and_save(base_url: str, entry: dict, output_dir: str, filename: str) -> str:
-    """Download the first image output and save it under the manifest name."""
+    """下载首个输出图像并按调用方文件名/扩展名直接落盘，避免二次转码。"""
     for out in entry.get("outputs", {}).values():
         for img in out.get("images", []) or []:
             if img.get("type") != "output":
@@ -661,13 +878,13 @@ def _collect_and_save(base_url: str, entry: dict, output_dir: str, filename: str
                     f"ComfyUI /view failed ({resp.status_code}) for {img['filename']}"
                 )
             ext = Path(img["filename"]).suffix.lower() or ".png"
-            if filename:
-                base = os.path.splitext(filename)[0]
-            else:
-                base = f"comfy_{int(time.time())}"
-            path = os.path.join(output_dir, f"{base}{ext}") if output_dir else f"{base}{ext}"
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
+            target_name = filename or f"comfy_{int(time.time())}"
+            path = resolve_output_path(
+                prompt="",
+                output_dir=output_dir or None,
+                filename=target_name,
+                ext=ext,
+            )
             return save_image_bytes(resp.content, path,
                                     content_type=resp.headers.get("content-type"))
     raise RuntimeError("ComfyUI run finished but produced no output images")
@@ -733,6 +950,8 @@ def _generate_image(base_url: str, template_path: Path, prompt: str,
             print(f"  [WARN] {warning}", flush=True)
     print()
     _ensure_server_running(base_url)
+    # 在 POST /prompt 前建立 WebSocket（若可用），防止极快任务漏掉完成事件
+    ws = _try_open_ws(base_url, client_id)
     print("  [..] Submitting to ComfyUI queue...", flush=True)
     start = time.time()
     try:
@@ -742,20 +961,35 @@ def _generate_image(base_url: str, template_path: Path, prompt: str,
             timeout=30,
         )
     except requests.ConnectionError as exc:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+        _invalidate_ready_cache(base_url)
         raise ConnectionError(
             f"Cannot reach ComfyUI at {base_url}. Start the local ComfyUI "
             "(e.g. the aki launcher or `comfy launch`) or set COMFY_BASE_URL."
         ) from exc
     if resp.status_code != 200:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
         raise _ComfyRunFailed(
             f"ComfyUI /prompt rejected the workflow ({resp.status_code}): "
             f"{resp.text[:800]}"
         )
+    _mark_server_ready(base_url)
     prompt_id = resp.json()["prompt_id"]
 
-    entry = _wait_for_completion(base_url, prompt_id,
-                                 int(os.environ.get(
-                                     "COMFY_TIMEOUT", str(DEFAULT_IMAGE_TIMEOUT))))
+    entry = _wait_for_completion(
+        base_url,
+        prompt_id,
+        int(os.environ.get("COMFY_TIMEOUT", str(DEFAULT_IMAGE_TIMEOUT))),
+        ws=ws,
+    )
     elapsed = time.time() - start
     print(f"\n  [DONE] ComfyUI finished in {elapsed:.1f}s")
     path = _collect_and_save(base_url, entry, output_dir or "", filename)

@@ -142,6 +142,70 @@ class TestManifestResume(unittest.TestCase):
         self._run()
         self.assertEqual(len(self.backend.calls), 2)
 
+    def test_local_backend_uses_sliding_window_without_inter_batch_sleep(self):
+        import threading
+        import time
+        from unittest import mock
+
+        class LocalPipelineBackend(FakeBackend):
+            IS_LOCAL_BACKEND = True
+            INTER_BATCH_PAUSE_SECONDS = 0.0
+
+            def __init__(self):
+                super().__init__()
+                self._lock = threading.Lock()
+                self._gate = threading.Event()
+                self.active = 0
+                self.max_active = 0
+
+            def generate(self, prompt, aspect_ratio, image_size, output_dir,
+                         filename=None, model=None):
+                with self._lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    # 使用 Event.wait 模拟耗时，避免与被 mock 的 time.sleep 混淆
+                    self._gate.wait(0.02 if filename == "a.png" else 0.08)
+                    return super().generate(
+                        prompt, aspect_ratio, image_size, output_dir,
+                        filename=filename, model=model,
+                    )
+                finally:
+                    with self._lock:
+                        self.active -= 1
+
+        data = {
+            "project": "local-pipeline-test",
+            "generated_at": "2026-11-26",
+            "items": [
+                {
+                    "filename": name,
+                    "prompt": f"prompt {name}",
+                    "aspect_ratio": "16:9",
+                    "image_size": "1K",
+                    "status": "Pending",
+                    "page_role": "local",
+                    "text_policy": "none",
+                }
+                for name in ("a.png", "b.png", "c.png", "d.png")
+            ],
+        }
+        Path(self.path).write_text(json.dumps(data), encoding="utf-8")
+        local_backend = LocalPipelineBackend()
+        manifest = image_gen.load_manifest(self.path)
+        with mock.patch.object(image_gen.time, "sleep") as sleep, \
+             contextlib.redirect_stdout(io.StringIO()):
+            ok, fail, skipped = image_gen._run_manifest(
+                manifest, self.path, local_backend,
+                initial_concurrency=2,
+                image_size="1K",
+                output_dir=self.dir,
+                model=None,
+            )
+        self.assertEqual((ok, fail, skipped), (4, 0, 0))
+        self.assertEqual(local_backend.max_active, 2)
+        sleep.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
